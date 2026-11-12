@@ -29,6 +29,15 @@
             emptyDescription: "Cadastre um proprietário primeiro e depois adicione o seu primeiro imóvel.",
             headers: ["Imóvel", "Responsável", "Endereço", "Aluguel", "Energia solar"],
         },
+        contratos: {
+            endpoint: "/api/contratos",
+            title: "Contratos",
+            singular: "contrato",
+            description: "Gerencie os contratos de aluguel e seus vínculos.",
+            empty: "Ainda não há contratos cadastrados.",
+            emptyDescription: "Cadastre o primeiro contrato relacionando um imóvel e um inquilino/cliente.",
+            headers: ["Imóvel", "Inquilino / Cliente", "Início", "Fim", "Aluguel", "Caução"],
+        },
     };
 
     const states = [
@@ -57,7 +66,10 @@
         editingId: null,
         modalMode: "create",
         modalModule: "proprietarios",
+        moduleRequestId: 0,
         owners: [],
+        properties: [],
+        clients: [],
         viacep: {
             lastCep: "",
             requestId: 0,
@@ -172,6 +184,14 @@
             field.addEventListener("input", markAsManual);
             field.addEventListener("change", markAsManual);
         });
+
+        const contractSection = document.querySelector('[data-form-section="contratos"]');
+        if (contractSection) {
+            const startDate = contractSection.querySelector('[data-field="data_inicio"]');
+            if (startDate) {
+                startDate.addEventListener("change", () => updateContractDateConstraints(contractSection));
+            }
+        }
     }
 
     function populateStaticSelects() {
@@ -190,6 +210,7 @@
             document.getElementById("count-proprietarios").textContent = counts.proprietarios || 0;
             document.getElementById("count-inquilinos").textContent = counts.inquilinos_clientes || 0;
             document.getElementById("count-imoveis").textContent = counts.imoveis || 0;
+            document.getElementById("count-contratos").textContent = counts.contratos || 0;
         } catch (error) {
             showToast(error.message, "error");
         }
@@ -204,22 +225,46 @@
         }
     }
 
+    async function loadContractOptions() {
+        try {
+            const [properties, clients] = await Promise.all([
+                apiFetch("/api/imoveis"),
+                apiFetch("/api/inquilinos-clientes"),
+            ]);
+            state.properties = properties;
+            state.clients = clients;
+            populateContractSelects();
+        } catch (error) {
+            showToast(error.message, "error");
+        }
+    }
+
     async function loadModule(moduleName) {
         const config = moduleConfig[moduleName];
         if (!config) {
             return;
         }
 
+        const requestId = ++state.moduleRequestId;
         setLoading(true);
         try {
-            state.records = await apiFetch(config.endpoint);
+            const records = await apiFetch(config.endpoint);
+            if (requestId !== state.moduleRequestId || state.module !== moduleName) {
+                return;
+            }
+            state.records = Array.isArray(records) ? records : [];
             renderTable();
         } catch (error) {
+            if (requestId !== state.moduleRequestId || state.module !== moduleName) {
+                return;
+            }
             state.records = [];
             renderTable();
             showToast(error.message, "error");
         } finally {
-            setLoading(false);
+            if (requestId === state.moduleRequestId) {
+                setLoading(false);
+            }
         }
     }
 
@@ -228,12 +273,16 @@
         if (state.module === "imoveis") {
             await loadOwners();
         }
+        if (state.module === "contratos") {
+            await loadContractOptions();
+        }
     }
 
     function setModule(moduleName) {
         if (state.module === moduleName) {
             elements.newRecordButton.dataset.module = moduleName;
             elements.emptyAction.dataset.module = moduleName;
+            loadModule(moduleName);
             return;
         }
         state.module = moduleName;
@@ -266,6 +315,18 @@
     }
 
     function renderRow(record) {
+        if (state.module === "contratos") {
+            return `<tr>
+                <td><div class="property-cell"><span class="row-avatar property">C</span><span>${escapeHtml(record.imovel_nome)}<small class="subtle-text">Código #${record.imovel_id}</small></span></div></td>
+                <td><div class="person-cell"><span class="row-avatar">${initials(record.inquilino_nome)}</span><span>${escapeHtml(record.inquilino_nome)}<small class="subtle-text">Código #${record.inquilino_id}</small></span></div></td>
+                <td>${escapeHtml(formatDate(record.data_inicio))}</td>
+                <td>${escapeHtml(formatDate(record.data_fim))}</td>
+                <td>${formatCurrency(record.valor_aluguel)}</td>
+                <td>${formatCurrency(record.valor_caucao)}</td>
+                <td class="actions-cell">${actionButtons(record.id)}</td>
+            </tr>`;
+        }
+
         if (state.module === "imoveis") {
             const location = [
                 record.endereco,
@@ -320,7 +381,11 @@
     }
 
     async function deleteRecord(id, record) {
-        const description = state.module === "imoveis" ? record.apelido : record.nome_completo;
+        const description = state.module === "imoveis"
+            ? record.apelido
+            : state.module === "contratos"
+                ? `${record.imovel_nome} / ${record.inquilino_nome}`
+                : record.nome_completo;
         if (!window.confirm(`Excluir “${description}”? Esta ação não poderá ser desfeita.`)) {
             return;
         }
@@ -343,6 +408,9 @@
         if (modalModule === "imoveis") {
             await loadOwners();
         }
+        if (modalModule === "contratos") {
+            await loadContractOptions();
+        }
 
         state.modalMode = mode;
         state.editingId = record ? record.id : null;
@@ -358,6 +426,10 @@
         clearForm(section);
         if (record) {
             fillForm(section, record);
+        }
+        if (modalModule === "contratos") {
+            setContractDateFields(section, isView);
+            updateContractDateConstraints(section);
         }
         setFormDisabled(section, isView);
 
@@ -400,6 +472,11 @@
             resetCepLookup();
             populateOwnerSelect();
         }
+        if (state.modalModule === "contratos") {
+            resetContractDateFields(section);
+            populateContractSelects();
+            updateContractDateConstraints(section);
+        }
     }
 
     function fillForm(section, record) {
@@ -418,7 +495,9 @@
             } else if (field.dataset.mask === "cep") {
                 field.value = formatCep(value);
             } else if (field.dataset.mask === "currency") {
-                field.value = formatCurrency(value);
+                field.value = value == null
+                    ? (state.modalMode === "view" ? formatCurrency(value) : "")
+                    : formatCurrency(value);
             } else {
                 field.value = value == null ? "" : String(value);
             }
@@ -443,6 +522,62 @@
             select.value = currentValue;
         }
         select.disabled = state.owners.length === 0;
+    }
+
+    function populateContractSelects() {
+        const propertySelect = document.getElementById("imovel-select");
+        const clientSelect = document.getElementById("inquilino-select");
+        if (!propertySelect || !clientSelect) {
+            return;
+        }
+
+        const propertyValue = propertySelect.value;
+        const clientValue = clientSelect.value;
+        propertySelect.innerHTML = "<option value=\"\">Selecione um imóvel</option>";
+        clientSelect.innerHTML = "<option value=\"\">Selecione um inquilino / cliente</option>";
+
+        state.properties.forEach((property) => {
+            propertySelect.add(new Option(property.apelido, property.id));
+        });
+        state.clients.forEach((client) => {
+            clientSelect.add(new Option(client.nome_completo, client.id));
+        });
+
+        if (propertyValue) {
+            propertySelect.value = propertyValue;
+        }
+        if (clientValue) {
+            clientSelect.value = clientValue;
+        }
+        propertySelect.disabled = state.properties.length === 0;
+        clientSelect.disabled = state.clients.length === 0;
+    }
+
+    function resetContractDateFields(section) {
+        section.querySelectorAll('[data-field="data_inicio"], [data-field="data_fim"]').forEach((field) => {
+            field.type = "date";
+            field.value = "";
+        });
+    }
+
+    function setContractDateFields(section, isView) {
+        section.querySelectorAll('[data-field="data_inicio"], [data-field="data_fim"]').forEach((field) => {
+            if (isView) {
+                field.type = "text";
+                field.value = formatDate(field.value);
+            } else {
+                field.type = "date";
+            }
+        });
+    }
+
+    function updateContractDateConstraints(section) {
+        const start = section.querySelector('[data-field="data_inicio"]');
+        const end = section.querySelector('[data-field="data_fim"]');
+        if (!start || !end || start.type !== "date") {
+            return;
+        }
+        end.min = start.value || "";
     }
 
     function resetCepLookup() {
@@ -599,10 +734,11 @@
 
     function validateClientPayload(data) {
         const currentModule = state.modalModule || state.module;
-        if (currentModule !== "imoveis" && !data.nome_completo) {
+        const isPersonModule = currentModule === "proprietarios" || currentModule === "inquilinos";
+        if (isPersonModule && !data.nome_completo) {
             return "Nome completo é obrigatório.";
         }
-        if (currentModule !== "imoveis" && data.cpf && !validCpf(data.cpf)) {
+        if (isPersonModule && data.cpf && !validCpf(data.cpf)) {
             return "Informe um CPF válido com 11 dígitos.";
         }
         if (currentModule === "imoveis") {
@@ -617,6 +753,26 @@
             }
             if (data.percentual_energia && (Number(data.percentual_energia) < 0 || Number(data.percentual_energia) > 100)) {
                 return "O percentual de energia deve estar entre 0 e 100.";
+            }
+        }
+        if (currentModule === "contratos") {
+            if (!data.imovel_id) {
+                return "Selecione um imóvel.";
+            }
+            if (!data.inquilino_id) {
+                return "Selecione um inquilino / cliente.";
+            }
+            if (!data.data_inicio) {
+                return "Data de início é obrigatória.";
+            }
+            if (!data.data_fim) {
+                return "Data de fim é obrigatória.";
+            }
+            if (data.data_fim < data.data_inicio) {
+                return "A data de fim não pode ser anterior à data de início.";
+            }
+            if (!data.valor_aluguel) {
+                return "Valor do aluguel é obrigatório.";
             }
         }
         if (data.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(data.email)) {
@@ -712,6 +868,13 @@
     function formatCurrency(value) {
         if (value === null || value === undefined || value === "" || Number.isNaN(Number(value))) return "—";
         return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value));
+    }
+
+    function formatDate(value) {
+        if (!value) return "—";
+        const parts = String(value).split("-");
+        if (parts.length !== 3) return String(value);
+        return `${parts[2]}/${parts[1]}/${parts[0]}`;
     }
 
     function initials(name) {

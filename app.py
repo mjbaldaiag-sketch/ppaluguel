@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,14 @@ PROPERTY_FIELDS = (
     "unidade_geradora",
     "percentual_energia",
 )
+
+KNOWN_REPLACEMENT_REPAIRS = {
+    "UNI\ufffdO": "UNIÃO",
+    "EST\ufffdVEL": "ESTÁVEL",
+    "LOG\ufffdSTICA": "LOGÍSTICA",
+    "SERT\ufffdOZINHO": "SERTÃOZINHO",
+    "ANT\ufffdNIO": "ANTÔNIO",
+}
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
@@ -186,6 +195,23 @@ def migrate_database(db: sqlite3.Connection) -> None:
     if "endereco" not in columns:
         db.execute("ALTER TABLE imoveis ADD COLUMN endereco TEXT")
 
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS contratos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            imovel_id INTEGER NOT NULL,
+            inquilino_id INTEGER NOT NULL,
+            data_inicio TEXT NOT NULL,
+            data_fim TEXT NOT NULL,
+            valor_aluguel REAL NOT NULL CHECK (valor_aluguel >= 0),
+            valor_caucao REAL CHECK (valor_caucao IS NULL OR valor_caucao >= 0),
+            FOREIGN KEY (imovel_id) REFERENCES imoveis (id) ON DELETE RESTRICT,
+            FOREIGN KEY (inquilino_id) REFERENCES inquilinos_clientes (id) ON DELETE RESTRICT,
+            CHECK (data_fim >= data_inicio)
+        )
+        """
+    )
+
 
 def normalize_existing_data(db: sqlite3.Connection) -> None:
     """Normalize text already stored by an earlier version of the app."""
@@ -233,15 +259,30 @@ def payload() -> dict[str, Any] | None:
 def clean_text(value: Any) -> str | None:
     if value is None:
         return None
-    text = str(value).strip().upper()
+    text = repair_text_encoding(str(value)).strip().upper()
     return text or None
+
+
+def repair_text_encoding(value: str) -> str:
+    """Repair common UTF-8/Latin-1 mojibake without changing valid text."""
+
+    repaired = value
+    if any(marker in repaired for marker in ("Ã", "Â", "â")):
+        try:
+            repaired = repaired.encode("latin1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            repaired = value
+
+    for corrupted, correct in KNOWN_REPLACEMENT_REPAIRS.items():
+        repaired = repaired.replace(corrupted, correct)
+    return repaired
 
 
 def normalize_persisted_text(field: str, value: Any) -> str | None:
     if field == "email":
         if value is None:
             return None
-        text = str(value).strip().lower()
+        text = repair_text_encoding(str(value)).strip().lower()
         return text or None
     return clean_text(value)
 
@@ -401,6 +442,62 @@ def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
     )
 
 
+def parse_foreign_key(
+    value: Any,
+    label: str,
+    table: str,
+    db: sqlite3.Connection,
+) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"Selecione um {label} válido.")
+    try:
+        record_id = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Selecione um {label}.") from None
+    if record_id <= 0:
+        raise ValueError(f"Selecione um {label}.")
+    if db.execute(f"SELECT 1 FROM {table} WHERE id = ?", (record_id,)).fetchone() is None:
+        raise ValueError(f"O {label} selecionado não existe.")
+    return record_id
+
+
+def parse_contract_date(value: Any, label: str) -> date:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"{label} é obrigatória.")
+
+    text = str(value).strip()
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"{label} deve ser uma data válida.") from None
+    if parsed.isoformat() != text:
+        raise ValueError(f"{label} deve estar no formato AAAA-MM-DD.")
+    return parsed
+
+
+def contract_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, ...]:
+    property_id = parse_foreign_key(data.get("imovel_id"), "imóvel", "imoveis", db)
+    tenant_id = parse_foreign_key(
+        data.get("inquilino_id"),
+        "inquilino/cliente",
+        "inquilinos_clientes",
+        db,
+    )
+    start_date = parse_contract_date(data.get("data_inicio"), "Data de início")
+    end_date = parse_contract_date(data.get("data_fim"), "Data de fim")
+    if end_date < start_date:
+        raise ValueError("A data de fim não pode ser anterior à data de início.")
+
+    return (
+        property_id,
+        tenant_id,
+        start_date.isoformat(),
+        end_date.isoformat(),
+        parse_decimal(data.get("valor_aluguel"), "Valor do aluguel", required=True),
+        parse_decimal(data.get("valor_caucao"), "Valor da caução"),
+    )
+
+
 def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
@@ -412,6 +509,20 @@ def get_property(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
         FROM imoveis AS i
         JOIN proprietario AS p ON p.id = i.responsavel
         WHERE i.id = ?
+        """,
+        (record_id,),
+    ).fetchone()
+
+
+def get_contract(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
+    return db.execute(
+        """
+        SELECT c.*, i.apelido AS imovel_nome,
+               ic.nome_completo AS inquilino_nome
+        FROM contratos AS c
+        JOIN imoveis AS i ON i.id = c.imovel_id
+        JOIN inquilinos_clientes AS ic ON ic.id = c.inquilino_id
+        WHERE c.id = ?
         """,
         (record_id,),
     ).fetchone()
@@ -429,6 +540,7 @@ def register_routes(app: Flask) -> None:
             "proprietarios": db.execute("SELECT COUNT(*) FROM proprietario").fetchone()[0],
             "inquilinos_clientes": db.execute("SELECT COUNT(*) FROM inquilinos_clientes").fetchone()[0],
             "imoveis": db.execute("SELECT COUNT(*) FROM imoveis").fetchone()[0],
+            "contratos": db.execute("SELECT COUNT(*) FROM contratos").fetchone()[0],
         }
         return jsonify({"counts": counts})
 
@@ -566,6 +678,14 @@ def register_routes(app: Flask) -> None:
             ).fetchone()
             return jsonify(row_dict(updated))
 
+        linked = db.execute(
+            "SELECT COUNT(*) FROM contratos WHERE inquilino_id = ?", (record_id,)
+        ).fetchone()[0]
+        if linked:
+            return error_response(
+                "Este inquilino/cliente possui contratos vinculados. Exclua-os antes de remover o cadastro.",
+                409,
+            )
         db.execute("DELETE FROM inquilinos_clientes WHERE id = ?", (record_id,))
         db.commit()
         return ("", 204)
@@ -638,7 +758,85 @@ def register_routes(app: Flask) -> None:
             updated = get_property(db, record_id)
             return jsonify(row_dict(updated))
 
+        linked = db.execute(
+            "SELECT COUNT(*) FROM contratos WHERE imovel_id = ?", (record_id,)
+        ).fetchone()[0]
+        if linked:
+            return error_response(
+                "Este imóvel possui contratos vinculados. Exclua-os antes de remover o cadastro.",
+                409,
+            )
         db.execute("DELETE FROM imoveis WHERE id = ?", (record_id,))
+        db.commit()
+        return ("", 204)
+
+    @app.route("/api/contratos", methods=["GET", "POST"])
+    def contracts_collection():
+        db = get_db()
+        if request.method == "GET":
+            rows = db.execute(
+                """
+                SELECT c.*, i.apelido AS imovel_nome,
+                       ic.nome_completo AS inquilino_nome
+                FROM contratos AS c
+                JOIN imoveis AS i ON i.id = c.imovel_id
+                JOIN inquilinos_clientes AS ic ON ic.id = c.inquilino_id
+                ORDER BY c.data_inicio DESC, c.id DESC
+                """
+            ).fetchall()
+            return jsonify([row_dict(row) for row in rows])
+
+        data = payload()
+        if data is None:
+            return error_response("Envie um objeto JSON válido.")
+        try:
+            values = contract_values(data, db)
+        except ValueError as error:
+            return error_response(str(error))
+
+        cursor = db.execute(
+            """
+            INSERT INTO contratos
+                (imovel_id, inquilino_id, data_inicio, data_fim,
+                 valor_aluguel, valor_caucao)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+        db.commit()
+        row = get_contract(db, cursor.lastrowid)
+        return jsonify(row_dict(row)), 201
+
+    @app.route("/api/contratos/<int:record_id>", methods=["GET", "PUT", "DELETE"])
+    def contract_item(record_id: int):
+        db = get_db()
+        row = get_contract(db, record_id)
+        if row is None:
+            return error_response("Contrato não encontrado.", 404)
+        if request.method == "GET":
+            return jsonify(row_dict(row))
+        if request.method == "PUT":
+            data = payload()
+            if data is None:
+                return error_response("Envie um objeto JSON válido.")
+            try:
+                values = contract_values(data, db)
+            except ValueError as error:
+                return error_response(str(error))
+            db.execute(
+                """
+                UPDATE contratos
+                SET imovel_id = ?, inquilino_id = ?, data_inicio = ?, data_fim = ?,
+                    valor_aluguel = ?, valor_caucao = ?
+                WHERE id = ?
+                """,
+                (*values, record_id),
+            )
+            db.commit()
+            updated = get_contract(db, record_id)
+            return jsonify(row_dict(updated))
+
+        db.execute("DELETE FROM contratos WHERE id = ?", (record_id,))
         db.commit()
         return ("", 204)
 

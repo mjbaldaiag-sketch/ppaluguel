@@ -23,6 +23,10 @@
     box-sizing: border-box;
 }
 
+[hidden] {
+    display: none !important;
+}
+
 html {
     min-width: 320px;
     background: var(--bg);
@@ -364,7 +368,7 @@ h3 {
 
 .summary-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 18px;
     margin-top: 43px;
 }
@@ -393,6 +397,10 @@ h3 {
     background: #eaf8f2;
 }
 
+.summary-card-amber {
+    background: #fff6e8;
+}
+
 .card-icon {
     display: grid;
     width: 46px;
@@ -416,6 +424,11 @@ h3 {
 .summary-card-green .card-icon {
     background: #d3f1e3;
     color: #39ad82;
+}
+
+.summary-card-amber .card-icon {
+    background: #ffe8bd;
+    color: #d2943f;
 }
 
 .card-data {
@@ -461,6 +474,10 @@ h3 {
 
 .summary-card-green .card-decoration {
     color: rgba(42, 163, 119, .16);
+}
+
+.summary-card-amber .card-decoration {
+    color: rgba(210, 148, 63, .18);
 }
 
 .module-section {
@@ -911,6 +928,7 @@ h3 {
 
 @media (max-width: 1080px) {
     .summary-grid {
+        grid-template-columns: repeat(2, 1fr);
         gap: 12px;
     }
 

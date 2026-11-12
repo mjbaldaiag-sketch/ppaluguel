@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app import create_app
+from app import create_app, repair_text_encoding
 
 
 class AppCrudTestCase(unittest.TestCase):
@@ -68,6 +68,17 @@ class AppCrudTestCase(unittest.TestCase):
             "percentual_energia": "35,5",
         }
 
+    @staticmethod
+    def contract_payload(property_id, tenant_id):
+        return {
+            "imovel_id": property_id,
+            "inquilino_id": tenant_id,
+            "data_inicio": "2026-01-01",
+            "data_fim": "2027-01-01",
+            "valor_aluguel": "R$ 2.500,00",
+            "valor_caucao": "R$ 5.000,00",
+        }
+
     def test_dashboard_and_database_initialize_automatically(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
@@ -76,7 +87,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(dashboard.status_code, 200)
         self.assertEqual(
             dashboard.get_json()["counts"],
-            {"proprietarios": 0, "inquilinos_clientes": 0, "imoveis": 0},
+            {"proprietarios": 0, "inquilinos_clientes": 0, "imoveis": 0, "contratos": 0},
         )
 
     def test_proprietario_crud_and_normalization(self):
@@ -152,6 +163,102 @@ class AppCrudTestCase(unittest.TestCase):
             self.client.delete(f"/api/proprietarios/{owner['id']}").status_code,
             204,
         )
+
+    def test_contract_crud_relationships_and_parent_delete_block(self):
+        owner = self.post_json(
+            "/api/proprietarios",
+            self.person_payload("Proprietário do Contrato"),
+        ).get_json()
+        property_data = self.post_json(
+            "/api/imoveis", self.property_payload(owner["id"])
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes",
+            self.person_payload("Inquilino do Contrato"),
+        ).get_json()
+
+        payload = self.contract_payload(property_data["id"], tenant["id"])
+        created = self.post_json("/api/contratos", payload)
+        self.assertEqual(created.status_code, 201)
+        contract = created.get_json()
+        self.assertEqual(contract["imovel_id"], property_data["id"])
+        self.assertEqual(contract["inquilino_id"], tenant["id"])
+        self.assertEqual(contract["data_inicio"], "2026-01-01")
+        self.assertEqual(contract["valor_aluguel"], 2500.0)
+        self.assertEqual(contract["valor_caucao"], 5000.0)
+        self.assertEqual(contract["imovel_nome"], "APARTAMENTO CENTRO")
+        self.assertEqual(contract["inquilino_nome"], "INQUILINO DO CONTRATO")
+
+        contract_id = contract["id"]
+        listing = self.client.get("/api/contratos")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.get_json()[0]["id"], contract_id)
+        fetched = self.client.get(f"/api/contratos/{contract_id}")
+        self.assertEqual(fetched.status_code, 200)
+
+        blocked_property = self.client.delete(f"/api/imoveis/{property_data['id']}")
+        self.assertEqual(blocked_property.status_code, 409)
+        blocked_tenant = self.client.delete(f"/api/inquilinos-clientes/{tenant['id']}")
+        self.assertEqual(blocked_tenant.status_code, 409)
+
+        changed = self.contract_payload(property_data["id"], tenant["id"])
+        changed.update({"data_fim": "2028-01-01", "valor_caucao": ""})
+        updated = self.put_json(f"/api/contratos/{contract_id}", changed)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["data_fim"], "2028-01-01")
+        self.assertIsNone(updated.get_json()["valor_caucao"])
+
+        self.assertEqual(self.client.delete(f"/api/contratos/{contract_id}").status_code, 204)
+        self.assertEqual(self.client.delete(f"/api/imoveis/{property_data['id']}").status_code, 204)
+        self.assertEqual(self.client.delete(f"/api/inquilinos-clientes/{tenant['id']}").status_code, 204)
+
+    def test_contract_validation_errors(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário Validação")
+        ).get_json()
+        property_data = self.post_json(
+            "/api/imoveis", self.property_payload(owner["id"])
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Validação")
+        ).get_json()
+        valid = self.contract_payload(property_data["id"], tenant["id"])
+
+        missing_required = dict(valid)
+        missing_required.pop("data_inicio")
+        self.assertEqual(self.post_json("/api/contratos", missing_required).status_code, 400)
+
+        invalid_property = dict(valid, imovel_id=999)
+        self.assertEqual(self.post_json("/api/contratos", invalid_property).status_code, 400)
+
+        invalid_dates = dict(valid, data_inicio="2027-01-01", data_fim="2026-01-01")
+        self.assertEqual(self.post_json("/api/contratos", invalid_dates).status_code, 400)
+
+        invalid_format = dict(valid, data_inicio="01/01/2026")
+        self.assertEqual(self.post_json("/api/contratos", invalid_format).status_code, 400)
+
+        invalid_money = dict(valid, valor_aluguel="-1")
+        self.assertEqual(self.post_json("/api/contratos", invalid_money).status_code, 400)
+
+    def test_dashboard_contract_count_and_page_markup(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn('data-module="contratos"', page)
+        self.assertIn('data-form-section="contratos"', page)
+        self.assertIn('data-field="imovel_id"', page)
+        self.assertIn('data-field="inquilino_id"', page)
+        self.assertIn('id="count-contratos"', page)
+
+    def test_frontend_text_has_no_mojibake_markers(self):
+        app_js = Path(__file__).resolve().parents[1] / "static" / "js" / "app.js"
+        source = app_js.read_text(encoding="utf-8")
+        self.assertIn("Código #", source)
+        self.assertNotIn("C" + "\u00c3\u00b3" + "digo", source)
+        self.assertNotIn("\ufffd", source)
+
+    def test_text_encoding_repair_preserves_valid_utf8(self):
+        self.assertEqual(repair_text_encoding("CÃ³digo"), "Código")
+        self.assertEqual(repair_text_encoding("UNI\ufffdO"), "UNIÃO")
+        self.assertEqual(repair_text_encoding("UNIÃO"), "UNIÃO")
 
     def test_validation_errors(self):
         missing_name = self.post_json("/api/proprietarios", {"email": "bad"})
@@ -265,9 +372,16 @@ class AppCrudTestCase(unittest.TestCase):
         preserved = connection.execute(
             "SELECT apelido, cidade, aluguel FROM imoveis WHERE id = 1"
         ).fetchone()
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
         connection.close()
 
         self.assertIn("endereco", column_names)
+        self.assertIn("contratos", table_names)
         self.assertEqual(preserved, ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0))
 
 

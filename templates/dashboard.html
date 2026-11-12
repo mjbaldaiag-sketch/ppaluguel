@@ -28,6 +28,10 @@
                 <span class="nav-icon" aria-hidden="true">▦</span>
                 <span>Imóveis</span>
             </button>
+            <button class="nav-item" type="button" data-module="contratos">
+                <span class="nav-icon" aria-hidden="true">C</span>
+                <span>Contratos</span>
+            </button>
         </nav>
 
         <div class="sidebar-footer">
@@ -95,6 +99,15 @@
                         <span>Imóveis</span>
                         <strong id="count-imoveis">0</strong>
                         <small>unidades cadastradas</small>
+                    </div>
+                    <span class="card-decoration" aria-hidden="true">↗</span>
+                </article>
+                <article class="summary-card summary-card-amber">
+                    <div class="card-icon" aria-hidden="true">C</div>
+                    <div class="card-data">
+                        <span>Contratos</span>
+                        <strong id="count-contratos">0</strong>
+                        <small>aluguéis cadastrados</small>
                     </div>
                     <span class="card-decoration" aria-hidden="true">↗</span>
                 </article>
@@ -316,6 +329,43 @@
                     <label class="form-field">
                         <span>Percentual de energia</span>
                         <input type="number" data-field="percentual_energia" min="0" max="100" step="0.01" placeholder="0,00">
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-section" data-form-section="contratos" hidden>
+                <div class="form-section-heading">
+                    <h3>Dados do contrato</h3>
+                    <span>Campos com <b>*</b> são obrigatórios.</span>
+                </div>
+                <div class="form-grid">
+                    <label class="form-field">
+                        <span>Imóvel <b>*</b></span>
+                        <select data-field="imovel_id" id="imovel-select" aria-required="true">
+                            <option value="">Selecione um imóvel</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Inquilino / cliente <b>*</b></span>
+                        <select data-field="inquilino_id" id="inquilino-select" aria-required="true">
+                            <option value="">Selecione um inquilino / cliente</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Data de início <b>*</b></span>
+                        <input type="date" data-field="data_inicio" aria-required="true">
+                    </label>
+                    <label class="form-field">
+                        <span>Data de fim <b>*</b></span>
+                        <input type="date" data-field="data_fim" aria-required="true">
+                    </label>
+                    <label class="form-field">
+                        <span>Valor do aluguel <b>*</b></span>
+                        <input type="text" data-field="valor_aluguel" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00" aria-required="true">
+                    </label>
+                    <label class="form-field">
+                        <span>Valor da caução</span>
+                        <input type="text" data-field="valor_caucao" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
                     </label>
                 </div>
             </div>
