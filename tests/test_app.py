@@ -43,7 +43,7 @@ class AppCrudTestCase(unittest.TestCase):
             "contato": "(11) 99999-0000",
             "profissao": "Administradora",
             "estado_civil": "Casado(a)",
-            "email": "maria@example.com",
+            "email": "MARIA@EXAMPLE.COM",
         }
 
     @staticmethod
@@ -89,7 +89,7 @@ class AppCrudTestCase(unittest.TestCase):
         fetched = self.client.get(f"/api/proprietarios/{record_id}")
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.get_json()["nome_completo"], "MARIA DA SILVA")
-        self.assertEqual(fetched.get_json()["email"], "MARIA@EXAMPLE.COM")
+        self.assertEqual(fetched.get_json()["email"], "maria@example.com")
 
         updated = self.put_json(
             f"/api/proprietarios/{record_id}",
@@ -201,7 +201,7 @@ class AppCrudTestCase(unittest.TestCase):
                 (nome_completo, profissao, estado_civil, email)
             VALUES (?, ?, ?, ?)
             """,
-            ("nome antigo", "profissão antiga", "casado(a)", "email@exemplo.com"),
+            ("nome antigo", "profissão antiga", "casado(a)", "Email@Exemplo.com"),
         )
         connection.commit()
         connection.close()
@@ -211,7 +211,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(records[0]["nome_completo"], "NOME ANTIGO")
         self.assertEqual(records[0]["profissao"], "PROFISSÃO ANTIGA")
         self.assertEqual(records[0]["estado_civil"], "CASADO(A)")
-        self.assertEqual(records[0]["email"], "EMAIL@EXEMPLO.COM")
+        self.assertEqual(records[0]["email"], "email@exemplo.com")
 
 
 if __name__ == "__main__":

@@ -144,7 +144,7 @@
         elements.form.querySelectorAll("[data-mask]").forEach((input) => {
             input.addEventListener("input", () => applyMask(input));
         });
-        elements.form.querySelectorAll("input:not([data-mask])").forEach((input) => {
+        elements.form.querySelectorAll('input:not([data-mask]):not([data-field="email"])').forEach((input) => {
             input.addEventListener("input", () => {
                 input.value = input.value.toUpperCase();
             });
@@ -454,7 +454,8 @@
     function collectForm(section) {
         const data = {};
         section.querySelectorAll("[data-field]").forEach((field) => {
-            data[field.dataset.field] = field.value.trim().toUpperCase();
+            const value = field.value.trim();
+            data[field.dataset.field] = field.dataset.field === "email" ? value.toLowerCase() : value.toUpperCase();
         });
         return data;
     }

@@ -198,7 +198,7 @@ def normalize_existing_data(db: sqlite3.Connection) -> None:
         rows = db.execute(f"SELECT id, {', '.join(fields)} FROM {table}").fetchall()
         assignments = ", ".join(f"{field} = ?" for field in fields)
         for row in rows:
-            values = tuple(clean_text(row[field]) for field in fields)
+            values = tuple(normalize_persisted_text(field, row[field]) for field in fields)
             current = tuple(row[field] for field in fields)
             if values != current:
                 db.execute(
@@ -221,6 +221,15 @@ def clean_text(value: Any) -> str | None:
         return None
     text = str(value).strip().upper()
     return text or None
+
+
+def normalize_persisted_text(field: str, value: Any) -> str | None:
+    if field == "email":
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        return text or None
+    return clean_text(value)
 
 
 def normalize_document(value: Any, field: str) -> str | None:
@@ -269,12 +278,12 @@ def normalize_digits(value: Any, field: str, lengths: set[int]) -> str | None:
 
 
 def normalize_email(value: Any) -> str | None:
-    email = clean_text(value)
+    email = normalize_persisted_text("email", value)
     if email is None:
         return None
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise ValueError("Informe um e-mail válido.")
-    return email.upper()
+    return email
 
 
 def parse_decimal(value: Any, label: str, *, required: bool = False) -> float | None:
