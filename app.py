@@ -13,12 +13,12 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DATABASE = BASE_DIR / "instance" / "ppaluguel.db"
 
 ESTADOS_CIVIS = {
-    "Solteiro(a)",
-    "Casado(a)",
-    "Divorciado(a)",
-    "Viúvo(a)",
-    "Separado(a)",
-    "União estável",
+    "SOLTEIRO(A)",
+    "CASADO(A)",
+    "DIVORCIADO(A)",
+    "VIÚVO(A)",
+    "SEPARADO(A)",
+    "UNIÃO ESTÁVEL",
 }
 UF_VALIDAS = {
     "AC",
@@ -170,7 +170,41 @@ def init_db() -> None:
         );
         """
     )
+    normalize_existing_data(db)
     db.commit()
+
+
+def normalize_existing_data(db: sqlite3.Connection) -> None:
+    """Normalize text already stored by an earlier version of the app."""
+
+    fields_by_table = {
+        "proprietario": PERSON_FIELDS,
+        "inquilinos_clientes": PERSON_FIELDS,
+        "imoveis": (
+            "apelido",
+            "cep",
+            "estado",
+            "cidade",
+            "bairro",
+            "numero",
+            "complemento",
+            "inscricao_mun",
+            "numero_energia",
+            "numero_agua",
+            "unidade_geradora",
+        ),
+    }
+    for table, fields in fields_by_table.items():
+        rows = db.execute(f"SELECT id, {', '.join(fields)} FROM {table}").fetchall()
+        assignments = ", ".join(f"{field} = ?" for field in fields)
+        for row in rows:
+            values = tuple(clean_text(row[field]) for field in fields)
+            current = tuple(row[field] for field in fields)
+            if values != current:
+                db.execute(
+                    f"UPDATE {table} SET {assignments} WHERE id = ?",
+                    (*values, row["id"]),
+                )
 
 
 def error_response(message: str, status: int = 400):
@@ -185,7 +219,7 @@ def payload() -> dict[str, Any] | None:
 def clean_text(value: Any) -> str | None:
     if value is None:
         return None
-    text = str(value).strip()
+    text = str(value).strip().upper()
     return text or None
 
 
@@ -240,7 +274,7 @@ def normalize_email(value: Any) -> str | None:
         return None
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise ValueError("Informe um e-mail válido.")
-    return email.lower()
+    return email.upper()
 
 
 def parse_decimal(value: Any, label: str, *, required: bool = False) -> float | None:

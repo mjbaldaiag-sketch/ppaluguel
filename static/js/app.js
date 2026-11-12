@@ -42,12 +42,12 @@
     ];
 
     const maritalStatuses = [
-        "Solteiro(a)",
-        "Casado(a)",
-        "Divorciado(a)",
-        "Viúvo(a)",
-        "Separado(a)",
-        "União estável",
+        ["SOLTEIRO(A)", "Solteiro(a)"],
+        ["CASADO(A)", "Casado(a)"],
+        ["DIVORCIADO(A)", "Divorciado(a)"],
+        ["VIÚVO(A)", "Viúvo(a)"],
+        ["SEPARADO(A)", "Separado(a)"],
+        ["UNIÃO ESTÁVEL", "União estável"],
     ];
 
     const state = {
@@ -55,6 +55,7 @@
         records: [],
         editingId: null,
         modalMode: "create",
+        modalModule: "proprietarios",
         owners: [],
     };
 
@@ -115,8 +116,8 @@
             });
         });
 
-        elements.newRecordButton.addEventListener("click", () => openModal("create"));
-        elements.emptyAction.addEventListener("click", () => openModal("create"));
+        elements.newRecordButton.addEventListener("click", () => openModal("create", null, elements.newRecordButton.dataset.module || state.module));
+        elements.emptyAction.addEventListener("click", () => openModal("create", null, elements.emptyAction.dataset.module || state.module));
         elements.refreshButton.addEventListener("click", () => refreshCurrentModule());
         elements.form.addEventListener("submit", handleFormSubmit);
         elements.modalClose.addEventListener("click", closeModal);
@@ -143,11 +144,16 @@
         elements.form.querySelectorAll("[data-mask]").forEach((input) => {
             input.addEventListener("input", () => applyMask(input));
         });
+        elements.form.querySelectorAll("input:not([data-mask])").forEach((input) => {
+            input.addEventListener("input", () => {
+                input.value = input.value.toUpperCase();
+            });
+        });
     }
 
     function populateStaticSelects() {
         document.querySelectorAll('[data-field="estado_civil"]').forEach((select) => {
-            maritalStatuses.forEach((status) => select.add(new Option(status, status)));
+            maritalStatuses.forEach(([value, label]) => select.add(new Option(label, value)));
         });
 
         const stateSelect = document.querySelector('[data-form-section="imoveis"] [data-field="estado"]');
@@ -203,10 +209,14 @@
 
     function setModule(moduleName) {
         if (state.module === moduleName) {
+            elements.newRecordButton.dataset.module = moduleName;
+            elements.emptyAction.dataset.module = moduleName;
             return;
         }
         state.module = moduleName;
         const config = moduleConfig[moduleName];
+        elements.newRecordButton.dataset.module = moduleName;
+        elements.emptyAction.dataset.module = moduleName;
         elements.navItems.forEach((item) => item.classList.toggle("is-active", item.dataset.module === moduleName));
         elements.breadcrumbModule.textContent = config.title;
         elements.moduleTitle.textContent = config.title;
@@ -299,17 +309,23 @@
         }
     }
 
-    async function openModal(mode, record = null) {
-        if (state.module === "imoveis") {
+    async function openModal(mode, record = null, moduleName = state.module) {
+        const modalModule = moduleConfig[moduleName] ? moduleName : state.module;
+        state.modalModule = modalModule;
+        if (modalModule === "imoveis") {
             await loadOwners();
         }
 
         state.modalMode = mode;
         state.editingId = record ? record.id : null;
-        const config = moduleConfig[state.module];
+        const config = moduleConfig[modalModule];
         const isView = mode === "view";
         const isEdit = mode === "edit";
         const section = getActiveSection();
+
+        document.querySelectorAll("[data-form-section]").forEach((formSection) => {
+            formSection.hidden = formSection !== section;
+        });
 
         clearForm(section);
         if (record) {
@@ -341,7 +357,7 @@
     }
 
     function getActiveSection() {
-        return document.querySelector(`[data-form-section="${state.module}"]`);
+        return document.querySelector(`[data-form-section="${state.modalModule || state.module}"]`);
     }
 
     function clearForm(section) {
@@ -352,7 +368,7 @@
                 field.value = "";
             }
         });
-        if (state.module === "imoveis") {
+        if (state.modalModule === "imoveis") {
             populateOwnerSelect();
         }
     }
@@ -414,7 +430,8 @@
             return;
         }
 
-        const config = moduleConfig[state.module];
+        const currentModule = state.modalModule || state.module;
+        const config = moduleConfig[currentModule];
         const isEdit = state.modalMode === "edit";
         const url = isEdit ? `${config.endpoint}/${state.editingId}` : config.endpoint;
         try {
@@ -426,7 +443,7 @@
             closeModal();
             showToast(`${config.singular} ${isEdit ? "atualizado" : "cadastrado"} com sucesso.`);
             await refreshCurrentModule();
-            if (state.module === "proprietarios") {
+            if (currentModule === "proprietarios") {
                 await loadOwners();
             }
         } catch (error) {
@@ -437,19 +454,20 @@
     function collectForm(section) {
         const data = {};
         section.querySelectorAll("[data-field]").forEach((field) => {
-            data[field.dataset.field] = field.value.trim();
+            data[field.dataset.field] = field.value.trim().toUpperCase();
         });
         return data;
     }
 
     function validateClientPayload(data) {
-        if (state.module !== "imoveis" && !data.nome_completo) {
+        const currentModule = state.modalModule || state.module;
+        if (currentModule !== "imoveis" && !data.nome_completo) {
             return "Nome completo é obrigatório.";
         }
-        if (state.module !== "imoveis" && data.cpf && !validCpf(data.cpf)) {
+        if (currentModule !== "imoveis" && data.cpf && !validCpf(data.cpf)) {
             return "Informe um CPF válido com 11 dígitos.";
         }
-        if (state.module === "imoveis") {
+        if (currentModule === "imoveis") {
             if (!data.apelido) {
                 return "Apelido do imóvel é obrigatório.";
             }

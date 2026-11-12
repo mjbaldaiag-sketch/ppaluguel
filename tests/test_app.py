@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,14 +88,15 @@ class AppCrudTestCase(unittest.TestCase):
         record_id = owner["id"]
         fetched = self.client.get(f"/api/proprietarios/{record_id}")
         self.assertEqual(fetched.status_code, 200)
-        self.assertEqual(fetched.get_json()["nome_completo"], "Maria da Silva")
+        self.assertEqual(fetched.get_json()["nome_completo"], "MARIA DA SILVA")
+        self.assertEqual(fetched.get_json()["email"], "MARIA@EXAMPLE.COM")
 
         updated = self.put_json(
             f"/api/proprietarios/{record_id}",
             self.person_payload("Maria Souza"),
         )
         self.assertEqual(updated.status_code, 200)
-        self.assertEqual(updated.get_json()["nome_completo"], "Maria Souza")
+        self.assertEqual(updated.get_json()["nome_completo"], "MARIA SOUZA")
 
         deleted = self.client.delete(f"/api/proprietarios/{record_id}")
         self.assertEqual(deleted.status_code, 204)
@@ -110,7 +112,7 @@ class AppCrudTestCase(unittest.TestCase):
 
         listing = self.client.get("/api/inquilinos-clientes")
         self.assertEqual(listing.status_code, 200)
-        self.assertEqual(listing.get_json()[0]["nome_completo"], "João Cliente")
+        self.assertEqual(listing.get_json()[0]["nome_completo"], "JOÃO CLIENTE")
 
         self.assertEqual(
             self.client.delete(f"/api/inquilinos-clientes/{record_id}").status_code,
@@ -129,7 +131,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(property_data["responsavel"], owner["id"])
         self.assertEqual(property_data["aluguel"], 2500.0)
         self.assertEqual(property_data["percentual_energia"], 35.5)
-        self.assertEqual(property_data["responsavel_nome"], "Proprietário do Imóvel")
+        self.assertEqual(property_data["responsavel_nome"], "PROPRIETÁRIO DO IMÓVEL")
 
         blocked = self.client.delete(f"/api/proprietarios/{owner['id']}")
         self.assertEqual(blocked.status_code, 409)
@@ -188,7 +190,28 @@ class AppCrudTestCase(unittest.TestCase):
         fresh_client = self.app.test_client()
         records = fresh_client.get("/api/proprietarios").get_json()
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["nome_completo"], "Persistente")
+        self.assertEqual(records[0]["nome_completo"], "PERSISTENTE")
+
+    def test_existing_text_data_is_normalized_on_startup(self):
+        database = Path(self.temp_dir.name) / "test.db"
+        connection = sqlite3.connect(database)
+        connection.execute(
+            """
+            INSERT INTO proprietario
+                (nome_completo, profissao, estado_civil, email)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("nome antigo", "profissão antiga", "casado(a)", "email@exemplo.com"),
+        )
+        connection.commit()
+        connection.close()
+
+        create_app({"TESTING": True, "DATABASE": str(database)})
+        records = self.client.get("/api/proprietarios").get_json()
+        self.assertEqual(records[0]["nome_completo"], "NOME ANTIGO")
+        self.assertEqual(records[0]["profissao"], "PROFISSÃO ANTIGA")
+        self.assertEqual(records[0]["estado_civil"], "CASADO(A)")
+        self.assertEqual(records[0]["email"], "EMAIL@EXEMPLO.COM")
 
 
 if __name__ == "__main__":
