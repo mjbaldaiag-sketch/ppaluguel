@@ -50,6 +50,13 @@ UF_VALIDAS = {
     "SE",
     "TO",
 }
+TIPOS_IMOVEL = (
+    "CASA",
+    "APARTAMENTO",
+    "GALPÃO COMERCIAL",
+    "CHÁCARA/SÍTIO",
+    "TERRENO",
+)
 
 PERSON_FIELDS = (
     "nome_completo",
@@ -60,8 +67,19 @@ PERSON_FIELDS = (
     "estado_civil",
     "email",
 )
+CLIENT_FIELDS = (
+    "nome_completo",
+    "rg",
+    "cpf",
+    "contato",
+    "nome_contato",
+    "profissao",
+    "estado_civil",
+    "email",
+)
 
 PROPERTY_FIELDS = (
+    "tipo_imovel",
     "apelido",
     "responsavel",
     "cep",
@@ -150,6 +168,7 @@ def init_db() -> None:
             rg TEXT,
             cpf TEXT,
             contato TEXT,
+            nome_contato TEXT,
             profissao TEXT,
             estado_civil TEXT,
             email TEXT
@@ -158,6 +177,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS imoveis (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             apelido TEXT NOT NULL,
+            tipo_imovel TEXT,
             responsavel INTEGER NOT NULL,
             cep TEXT,
             endereco TEXT,
@@ -193,8 +213,16 @@ def migrate_database(db: sqlite3.Connection) -> None:
     columns = {
         row["name"] for row in db.execute("PRAGMA table_info(imoveis)").fetchall()
     }
+    client_columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(inquilinos_clientes)").fetchall()
+    }
+    if "nome_contato" not in client_columns:
+        db.execute("ALTER TABLE inquilinos_clientes ADD COLUMN nome_contato TEXT")
     if "endereco" not in columns:
         db.execute("ALTER TABLE imoveis ADD COLUMN endereco TEXT")
+    if "tipo_imovel" not in columns:
+        db.execute("ALTER TABLE imoveis ADD COLUMN tipo_imovel TEXT")
     if "imobiliaria" not in columns:
         db.execute(
             "ALTER TABLE imoveis ADD COLUMN imobiliaria INTEGER NOT NULL DEFAULT 0 "
@@ -224,8 +252,9 @@ def normalize_existing_data(db: sqlite3.Connection) -> None:
 
     fields_by_table = {
         "proprietario": PERSON_FIELDS,
-        "inquilinos_clientes": PERSON_FIELDS,
+        "inquilinos_clientes": CLIENT_FIELDS,
         "imoveis": (
+            "tipo_imovel",
             "apelido",
             "cep",
             "endereco",
@@ -401,7 +430,18 @@ def person_values(data: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def client_values(data: dict[str, Any]) -> tuple[Any, ...]:
+    values = person_values(data)
+    return (*values[:4], clean_text(data.get("nome_contato")), *values[4:])
+
+
 def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, ...]:
+    property_type = clean_text(data.get("tipo_imovel"))
+    if not property_type:
+        raise ValueError("Tipo de imóvel é obrigatório.")
+    if property_type not in TIPOS_IMOVEL:
+        raise ValueError("Tipo de imóvel inválido.")
+
     nickname = clean_text(data.get("apelido"))
     if not nickname:
         raise ValueError("Apelido é obrigatório.")
@@ -428,6 +468,7 @@ def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
         raise ValueError("Percentual de energia deve estar entre 0 e 100.")
 
     return (
+        property_type,
         nickname,
         responsible_id,
         normalize_digits(data.get("cep"), "cep", {8}),
@@ -634,15 +675,15 @@ def register_routes(app: Flask) -> None:
         if data is None:
             return error_response("Envie um objeto JSON válido.")
         try:
-            values = person_values(data)
+            values = client_values(data)
         except ValueError as error:
             return error_response(str(error))
 
         cursor = db.execute(
             """
             INSERT INTO inquilinos_clientes
-                (nome_completo, rg, cpf, contato, profissao, estado_civil, email)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (nome_completo, rg, cpf, contato, nome_contato, profissao, estado_civil, email)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -667,13 +708,13 @@ def register_routes(app: Flask) -> None:
             if data is None:
                 return error_response("Envie um objeto JSON válido.")
             try:
-                values = person_values(data)
+                values = client_values(data)
             except ValueError as error:
                 return error_response(str(error))
             db.execute(
                 """
                 UPDATE inquilinos_clientes
-                SET nome_completo = ?, rg = ?, cpf = ?, contato = ?,
+                SET nome_completo = ?, rg = ?, cpf = ?, contato = ?, nome_contato = ?,
                     profissao = ?, estado_civil = ?, email = ?
                 WHERE id = ?
                 """,
@@ -722,10 +763,10 @@ def register_routes(app: Flask) -> None:
         cursor = db.execute(
             """
             INSERT INTO imoveis
-                (apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
+                (tipo_imovel, apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
                  complemento, inscricao_mun, aluguel, numero_energia, numero_agua,
                  adm_propriedade, imobiliaria, energia_solar, unidade_geradora, percentual_energia)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -752,7 +793,7 @@ def register_routes(app: Flask) -> None:
             db.execute(
                 """
                 UPDATE imoveis
-                SET apelido = ?, responsavel = ?, cep = ?, endereco = ?, estado = ?,
+                SET tipo_imovel = ?, apelido = ?, responsavel = ?, cep = ?, endereco = ?, estado = ?,
                     cidade = ?, bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
                     aluguel = ?, numero_energia = ?, numero_agua = ?,
                     adm_propriedade = ?, imobiliaria = ?, energia_solar = ?, unidade_geradora = ?,

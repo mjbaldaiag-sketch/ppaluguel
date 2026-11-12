@@ -27,7 +27,7 @@
             description: "Acompanhe seus imóveis, responsáveis e dados de consumo.",
             empty: "Ainda não há imóveis cadastrados.",
             emptyDescription: "Cadastre um proprietário primeiro e depois adicione o seu primeiro imóvel.",
-            headers: ["Imóvel", "Responsável", "Endereço", "Aluguel", "Energia solar"],
+            headers: ["Tipo de imóvel", "Imóvel", "Responsável", "Endereço", "Aluguel referência", "Energia solar"],
         },
         contratos: {
             endpoint: "/api/contratos",
@@ -58,6 +58,13 @@
         ["SEPARADO(A)", "Separado(a)"],
         ["UNIÃO ESTÁVEL", "União estável"],
     ];
+    const propertyTypes = [
+        "CASA",
+        "APARTAMENTO",
+        "GALPÃO COMERCIAL",
+        "CHÁCARA/SÍTIO",
+        "TERRENO",
+    ];
     const VIA_CEP_FIELDS = ["endereco", "estado", "cidade", "bairro"];
 
     const state = {
@@ -74,8 +81,6 @@
             lastCep: "",
             requestId: 0,
             controller: null,
-            autoValues: {},
-            dirtyFields: {},
         },
     };
 
@@ -122,6 +127,7 @@
         elements.modalCancel = document.getElementById("modal-cancel");
         elements.modalSubmit = document.getElementById("modal-submit");
         elements.form = document.getElementById("record-form");
+        elements.clearCepButton = document.getElementById("clear-cep-button");
         elements.toastRegion = document.getElementById("toast-region");
     }
 
@@ -147,6 +153,7 @@
                 closeModal();
             }
         });
+        elements.clearCepButton.addEventListener("click", clearCep);
         elements.recordsBody.addEventListener("click", handleTableAction);
         elements.menuToggle.addEventListener("click", toggleSidebar);
         elements.sidebarBackdrop.addEventListener("click", closeSidebar);
@@ -174,17 +181,6 @@
                 input.value = input.value.toUpperCase();
             });
         });
-        elements.form.querySelectorAll("[data-field]").forEach((field) => {
-            if (!VIA_CEP_FIELDS.includes(field.dataset.field)) {
-                return;
-            }
-            const markAsManual = () => {
-                state.viacep.dirtyFields[field.dataset.field] = true;
-            };
-            field.addEventListener("input", markAsManual);
-            field.addEventListener("change", markAsManual);
-        });
-
         const contractSection = document.querySelector('[data-form-section="contratos"]');
         if (contractSection) {
             const startDate = contractSection.querySelector('[data-field="data_inicio"]');
@@ -336,6 +332,7 @@
             ].filter(Boolean).join(" · ") || "Endereço não informado";
             const solar = Number(record.energia_solar) === 1;
             return `<tr>
+                <td>${escapeHtml(record.tipo_imovel || "Não informado")}</td>
                 <td><div class="property-cell"><span class="row-avatar property">⌂</span><span>${escapeHtml(record.apelido)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
                 <td>${escapeHtml(record.responsavel_nome || "—")}</td>
                 <td>${escapeHtml(location)}</td>
@@ -488,8 +485,6 @@
             const value = record[fieldName];
             if (field.dataset.mask === "cpf") {
                 field.value = formatCpf(value);
-            } else if (field.dataset.mask === "rg") {
-                field.value = formatRg(value);
             } else if (field.dataset.mask === "phone") {
                 field.value = formatPhone(value);
             } else if (field.dataset.mask === "cep") {
@@ -505,7 +500,7 @@
     }
 
     function setFormDisabled(section, disabled) {
-        section.querySelectorAll("input, select").forEach((field) => {
+        section.querySelectorAll("input, select, button").forEach((field) => {
             field.disabled = disabled;
         });
     }
@@ -587,9 +582,37 @@
         state.viacep.lastCep = "";
         state.viacep.requestId += 1;
         state.viacep.controller = null;
-        state.viacep.autoValues = {};
-        state.viacep.dirtyFields = {};
         setCepStatus("", "");
+    }
+
+    function clearViaCepFields() {
+        const section = getActiveSection();
+        if (!section) {
+            return;
+        }
+        VIA_CEP_FIELDS.forEach((fieldName) => {
+            const field = section.querySelector(`[data-field="${fieldName}"]`);
+            if (field) {
+                field.value = "";
+            }
+        });
+    }
+
+    function clearCep() {
+        const section = getActiveSection();
+        resetCepLookup();
+        if (!section) {
+            return;
+        }
+
+        const cepField = section.querySelector('[data-field="cep"]');
+        if (cepField) {
+            cepField.value = "";
+        }
+        clearViaCepFields();
+        if (cepField && !cepField.disabled) {
+            cepField.focus();
+        }
     }
 
     function handleCepInput(input) {
@@ -601,10 +624,12 @@
             state.viacep.requestId += 1;
             state.viacep.controller = null;
             state.viacep.lastCep = "";
+            clearViaCepFields();
             setCepStatus("", "");
             return;
         }
         if (cep.length === 8 && cep !== state.viacep.lastCep) {
+            clearViaCepFields();
             lookupCep(cep);
         }
     }
@@ -669,14 +694,8 @@
             if (!field) {
                 return;
             }
-            const currentValue = field.value.trim().toUpperCase();
-            const previousAutoValue = state.viacep.autoValues[fieldName] || "";
-            const wasManuallyChanged = state.viacep.dirtyFields[fieldName] === true;
-            if (!wasManuallyChanged && (!currentValue || currentValue === previousAutoValue)) {
-                field.value = value;
-            }
+            field.value = value;
         });
-        state.viacep.autoValues = viaCepValues;
     }
 
     function setCepStatus(type, message) {
@@ -742,6 +761,12 @@
             return "Informe um CPF válido com 11 dígitos.";
         }
         if (currentModule === "imoveis") {
+            if (!data.tipo_imovel) {
+                return "Tipo de imóvel é obrigatório.";
+            }
+            if (!propertyTypes.includes(data.tipo_imovel)) {
+                return "Tipo de imóvel inválido.";
+            }
             if (!data.apelido) {
                 return "Apelido do imóvel é obrigatório.";
             }
@@ -818,7 +843,6 @@
     function applyMask(input) {
         const mask = input.dataset.mask;
         if (mask === "cpf") input.value = formatCpf(input.value);
-        if (mask === "rg") input.value = formatRg(input.value);
         if (mask === "phone") input.value = formatPhone(input.value);
         if (mask === "cep") input.value = formatCep(input.value);
         if (mask === "currency") input.value = formatCurrencyInput(input.value);
@@ -834,14 +858,6 @@
         if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
         if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
         return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
-    }
-
-    function formatRg(value) {
-        const raw = String(value || "").toUpperCase().replace(/[^0-9X]/g, "").slice(0, 9);
-        if (raw.length <= 2) return raw;
-        if (raw.length <= 5) return `${raw.slice(0, 2)}.${raw.slice(2)}`;
-        if (raw.length <= 8) return `${raw.slice(0, 2)}.${raw.slice(2, 5)}.${raw.slice(5)}`;
-        return `${raw.slice(0, 2)}.${raw.slice(2, 5)}.${raw.slice(5, 8)}-${raw.slice(8)}`;
     }
 
     function formatPhone(value) {

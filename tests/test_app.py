@@ -49,6 +49,7 @@ class AppCrudTestCase(unittest.TestCase):
     @staticmethod
     def property_payload(owner_id):
         return {
+            "tipo_imovel": "APARTAMENTO",
             "apelido": "Apartamento Centro",
             "responsavel": owner_id,
             "cep": "01001-000",
@@ -97,6 +98,7 @@ class AppCrudTestCase(unittest.TestCase):
         owner = created.get_json()
         self.assertEqual(owner["cpf"], "12345678909")
         self.assertEqual(owner["contato"], "11999990000")
+        self.assertEqual(owner["rg"], "123456789")
 
         record_id = owner["id"]
         fetched = self.client.get(f"/api/proprietarios/{record_id}")
@@ -104,33 +106,59 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(fetched.get_json()["nome_completo"], "MARIA DA SILVA")
         self.assertEqual(fetched.get_json()["email"], "maria@example.com")
 
-        updated = self.put_json(
-            f"/api/proprietarios/{record_id}",
-            self.person_payload("Maria Souza"),
-        )
+        updated_payload = self.person_payload("Maria Souza")
+        updated_payload["rg"] = "MG3942581"
+        updated = self.put_json(f"/api/proprietarios/{record_id}", updated_payload)
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.get_json()["nome_completo"], "MARIA SOUZA")
+        self.assertEqual(updated.get_json()["rg"], "MG3942581")
 
         deleted = self.client.delete(f"/api/proprietarios/{record_id}")
         self.assertEqual(deleted.status_code, 204)
         self.assertEqual(self.client.get(f"/api/proprietarios/{record_id}").status_code, 404)
 
     def test_inquilino_crud(self):
+        payload = self.person_payload("João Cliente")
+        payload["rg"] = "SSP4494416117"
+        payload["nome_contato"] = "Responsavel do contato"
         created = self.post_json(
             "/api/inquilinos-clientes",
-            self.person_payload("João Cliente"),
+            payload,
         )
         self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.get_json()["rg"], "SSP4494416117")
+        self.assertEqual(created.get_json()["nome_contato"], "RESPONSAVEL DO CONTATO")
         record_id = created.get_json()["id"]
+
+        fetched = self.client.get(f"/api/inquilinos-clientes/{record_id}")
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.get_json()["nome_contato"], "RESPONSAVEL DO CONTATO")
 
         listing = self.client.get("/api/inquilinos-clientes")
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.get_json()[0]["nome_completo"], "JOÃO CLIENTE")
+        self.assertEqual(listing.get_json()[0]["rg"], "SSP4494416117")
+
+        payload["nome_completo"] = "João Souza"
+        payload["rg"] = "MG3942581"
+        payload["nome_contato"] = "Novo responsavel"
+        updated = self.put_json(f"/api/inquilinos-clientes/{record_id}", payload)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["rg"], "MG3942581")
+        self.assertEqual(updated.get_json()["nome_contato"], "NOVO RESPONSAVEL")
 
         self.assertEqual(
             self.client.delete(f"/api/inquilinos-clientes/{record_id}").status_code,
             204,
         )
+
+    def test_inquilino_nome_contato_is_optional(self):
+        created = self.post_json(
+            "/api/inquilinos-clientes",
+            self.person_payload("Cliente sem nome de contato"),
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertIsNone(created.get_json()["nome_contato"])
 
     def test_property_relationship_crud_and_owner_delete_block(self):
         owner = self.post_json(
@@ -142,6 +170,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(created.status_code, 201)
         property_data = created.get_json()
         self.assertEqual(property_data["responsavel"], owner["id"])
+        self.assertEqual(property_data["tipo_imovel"], "APARTAMENTO")
         self.assertEqual(property_data["aluguel"], 2500.0)
         self.assertEqual(property_data["imobiliaria"], 1)
         self.assertEqual(property_data["percentual_energia"], 35.5)
@@ -153,10 +182,10 @@ class AppCrudTestCase(unittest.TestCase):
 
         changed = self.property_payload(owner["id"])
         changed["apelido"] = "Casa Atualizada"
-        self.assertEqual(
-            self.put_json(f"/api/imoveis/{property_data['id']}", changed).status_code,
-            200,
-        )
+        changed["tipo_imovel"] = "CASA"
+        updated = self.put_json(f"/api/imoveis/{property_data['id']}", changed)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["tipo_imovel"], "CASA")
         self.assertEqual(
             self.client.delete(f"/api/imoveis/{property_data['id']}").status_code,
             204,
@@ -246,9 +275,26 @@ class AppCrudTestCase(unittest.TestCase):
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn('data-module="contratos"', page)
         self.assertIn('data-form-section="contratos"', page)
+        self.assertIn('data-field="tipo_imovel"', page)
+        self.assertIn("GALPÃO COMERCIAL", page)
+        self.assertIn("CHÁCARA/SÍTIO", page)
+        self.assertEqual(page.count('data-field="rg"'), 2)
+        self.assertNotIn('data-field="rg" data-mask="rg"', page)
+        self.assertIn('data-field="rg" inputmode="text" placeholder="Ex.: MG3942581"', page)
+        self.assertIn('data-field="rg" inputmode="text" placeholder="Ex.: SSP4494416117"', page)
         self.assertIn('data-field="imovel_id"', page)
         self.assertIn('data-field="inquilino_id"', page)
+        self.assertIn('id="clear-cep-button"', page)
+        self.assertIn(">Limpar CEP</button>", page)
         self.assertIn('id="count-contratos"', page)
+        proprietario_section = page.split('data-form-section="proprietarios"', 1)[1].split(
+            'data-form-section="inquilinos"', 1
+        )[0]
+        inquilino_section = page.split('data-form-section="inquilinos"', 1)[1].split(
+            'data-form-section="imoveis"', 1
+        )[0]
+        self.assertNotIn('data-field="nome_contato"', proprietario_section)
+        self.assertIn('data-field="nome_contato"', inquilino_section)
 
     def test_frontend_text_has_no_mojibake_markers(self):
         app_js = Path(__file__).resolve().parents[1] / "static" / "js" / "app.js"
@@ -296,6 +342,39 @@ class AppCrudTestCase(unittest.TestCase):
         invalid_percentage["percentual_energia"] = "101"
         self.assertEqual(self.post_json("/api/imoveis", invalid_percentage).status_code, 400)
 
+        missing_property_type = self.property_payload(owner["id"])
+        missing_property_type.pop("tipo_imovel")
+        self.assertEqual(self.post_json("/api/imoveis", missing_property_type).status_code, 400)
+
+        invalid_property_type = self.property_payload(owner["id"])
+        invalid_property_type["tipo_imovel"] = "LOFT"
+        self.assertEqual(self.post_json("/api/imoveis", invalid_property_type).status_code, 400)
+
+    def test_property_types_are_persisted(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Tipos de Imóveis")
+        ).get_json()
+        expected_types = [
+            "CASA",
+            "APARTAMENTO",
+            "GALPÃO COMERCIAL",
+            "CHÁCARA/SÍTIO",
+            "TERRENO",
+        ]
+
+        for index, property_type in enumerate(expected_types, start=1):
+            payload = self.property_payload(owner["id"])
+            payload.update({"tipo_imovel": property_type, "apelido": f"Imóvel {index}"})
+            response = self.post_json("/api/imoveis", payload)
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.get_json()["tipo_imovel"], property_type)
+
+        records = self.client.get("/api/imoveis").get_json()
+        self.assertEqual(
+            {record["tipo_imovel"] for record in records},
+            set(expected_types),
+        )
+
     def test_data_persists_between_requests(self):
         self.post_json("/api/proprietarios", self.person_payload("Persistente"))
         fresh_client = self.app.test_client()
@@ -340,6 +419,18 @@ class AppCrudTestCase(unittest.TestCase):
                 email TEXT
             );
             INSERT INTO proprietario (nome_completo) VALUES ('PROPRIETÁRIO LEGADO');
+            CREATE TABLE inquilinos_clientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            INSERT INTO inquilinos_clientes (nome_completo)
+            VALUES ('CLIENTE LEGADO');
             CREATE TABLE imoveis (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 apelido TEXT NOT NULL,
@@ -371,8 +462,15 @@ class AppCrudTestCase(unittest.TestCase):
         column_names = {
             row[1] for row in connection.execute("PRAGMA table_info(imoveis)").fetchall()
         }
+        client_column_names = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(inquilinos_clientes)").fetchall()
+        }
         preserved = connection.execute(
-            "SELECT apelido, cidade, aluguel, imobiliaria FROM imoveis WHERE id = 1"
+            "SELECT apelido, cidade, aluguel, tipo_imovel, imobiliaria FROM imoveis WHERE id = 1"
+        ).fetchone()
+        client_preserved = connection.execute(
+            "SELECT nome_completo, nome_contato FROM inquilinos_clientes WHERE id = 1"
         ).fetchone()
         table_names = {
             row[0]
@@ -383,9 +481,12 @@ class AppCrudTestCase(unittest.TestCase):
         connection.close()
 
         self.assertIn("endereco", column_names)
+        self.assertIn("tipo_imovel", column_names)
         self.assertIn("imobiliaria", column_names)
+        self.assertIn("nome_contato", client_column_names)
         self.assertIn("contratos", table_names)
-        self.assertEqual(preserved, ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0, 0))
+        self.assertEqual(preserved, ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0, None, 0))
+        self.assertEqual(client_preserved, ("CLIENTE LEGADO", None))
 
 
 if __name__ == "__main__":

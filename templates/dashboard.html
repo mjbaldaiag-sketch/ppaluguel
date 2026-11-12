@@ -177,7 +177,7 @@
                     </label>
                     <label class="form-field">
                         <span>RG</span>
-                        <input type="text" data-field="rg" data-mask="rg" inputmode="numeric" placeholder="00.000.000-0">
+                        <input type="text" data-field="rg" inputmode="text" placeholder="Ex.: MG3942581">
                     </label>
                     <label class="form-field">
                         <span>Contato</span>
@@ -216,11 +216,15 @@
                     </label>
                     <label class="form-field">
                         <span>RG</span>
-                        <input type="text" data-field="rg" data-mask="rg" inputmode="numeric" placeholder="00.000.000-0">
+                        <input type="text" data-field="rg" inputmode="text" placeholder="Ex.: SSP4494416117">
                     </label>
                     <label class="form-field">
                         <span>Contato</span>
                         <input type="tel" data-field="contato" data-mask="phone" inputmode="tel" placeholder="(00) 00000-0000">
+                    </label>
+                    <label class="form-field">
+                        <span>Nome contato</span>
+                        <input type="text" data-field="nome_contato">
                     </label>
                     <label class="form-field">
                         <span>Profissão</span>
@@ -245,6 +249,17 @@
                     <span>Campos com <b>*</b> são obrigatórios.</span>
                 </div>
                 <div class="form-grid">
+                    <label class="form-field">
+                        <span>Tipo de imóvel <b>*</b></span>
+                        <select data-field="tipo_imovel" aria-required="true">
+                            <option value="">Selecione um tipo</option>
+                            <option value="CASA">CASA</option>
+                            <option value="APARTAMENTO">APARTAMENTO</option>
+                            <option value="GALPÃO COMERCIAL">GALPÃO COMERCIAL</option>
+                            <option value="CHÁCARA/SÍTIO">CHÁCARA/SÍTIO</option>
+                            <option value="TERRENO">TERRENO</option>
+                        </select>
+                    </label>
                     <label class="form-field form-field-wide">
                         <span>Apelido do imóvel <b>*</b></span>
                         <input type="text" data-field="apelido" placeholder="Ex.: Apartamento Centro">
@@ -256,7 +271,10 @@
                         </select>
                     </label>
                     <label class="form-field">
-                        <span>CEP <small class="field-status" id="cep-lookup-status" aria-live="polite"></small></span>
+                        <span class="field-label-row">
+                            <span>CEP <small class="field-status" id="cep-lookup-status" aria-live="polite"></small></span>
+                            <button class="clear-cep-button" id="clear-cep-button" type="button">Limpar CEP</button>
+                        </span>
                         <input type="text" data-field="cep" data-mask="cep" inputmode="numeric" placeholder="00000-000" autocomplete="postal-code">
                     </label>
                     <label class="form-field form-field-wide">
@@ -297,7 +315,7 @@
                 </div>
                 <div class="form-grid">
                     <label class="form-field">
-                        <span>Aluguel <b>*</b></span>
+                        <span>Valor do aluguel referência <b>*</b></span>
                         <input type="text" data-field="aluguel" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
                     </label>
                     <label class="form-field">
