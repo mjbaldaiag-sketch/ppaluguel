@@ -463,7 +463,7 @@
     function clearForm(section) {
         section.querySelectorAll("[data-field]").forEach((field) => {
             if (field.tagName === "SELECT") {
-                field.value = field.dataset.field === "adm_propriedade" || field.dataset.field === "energia_solar" ? "0" : "";
+                field.value = ["adm_propriedade", "imobiliaria", "energia_solar"].includes(field.dataset.field) ? "0" : "";
             } else {
                 field.value = "";
             }

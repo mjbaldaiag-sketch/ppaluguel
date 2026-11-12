@@ -171,6 +171,7 @@ def init_db() -> None:
             numero_energia TEXT,
             numero_agua TEXT,
             adm_propriedade INTEGER NOT NULL DEFAULT 0 CHECK (adm_propriedade IN (0, 1)),
+            imobiliaria INTEGER NOT NULL DEFAULT 0 CHECK (imobiliaria IN (0, 1)),
             energia_solar INTEGER NOT NULL DEFAULT 0 CHECK (energia_solar IN (0, 1)),
             unidade_geradora TEXT,
             percentual_energia REAL CHECK (
@@ -194,6 +195,11 @@ def migrate_database(db: sqlite3.Connection) -> None:
     }
     if "endereco" not in columns:
         db.execute("ALTER TABLE imoveis ADD COLUMN endereco TEXT")
+    if "imobiliaria" not in columns:
+        db.execute(
+            "ALTER TABLE imoveis ADD COLUMN imobiliaria INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (imobiliaria IN (0, 1))"
+        )
 
     db.execute(
         """
@@ -436,6 +442,7 @@ def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
         clean_text(data.get("numero_energia")),
         clean_text(data.get("numero_agua")),
         parse_boolean(data.get("adm_propriedade"), "Administração da propriedade"),
+        parse_boolean(data.get("imobiliaria"), "Administração por imobiliária"),
         parse_boolean(data.get("energia_solar"), "Energia solar"),
         clean_text(data.get("unidade_geradora")),
         energy_percentage,
@@ -717,8 +724,8 @@ def register_routes(app: Flask) -> None:
             INSERT INTO imoveis
                 (apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
                  complemento, inscricao_mun, aluguel, numero_energia, numero_agua,
-                 adm_propriedade, energia_solar, unidade_geradora, percentual_energia)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 adm_propriedade, imobiliaria, energia_solar, unidade_geradora, percentual_energia)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -748,7 +755,7 @@ def register_routes(app: Flask) -> None:
                 SET apelido = ?, responsavel = ?, cep = ?, endereco = ?, estado = ?,
                     cidade = ?, bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
                     aluguel = ?, numero_energia = ?, numero_agua = ?,
-                    adm_propriedade = ?, energia_solar = ?, unidade_geradora = ?,
+                    adm_propriedade = ?, imobiliaria = ?, energia_solar = ?, unidade_geradora = ?,
                     percentual_energia = ?
                 WHERE id = ?
                 """,

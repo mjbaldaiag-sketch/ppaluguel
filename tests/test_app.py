@@ -63,6 +63,7 @@ class AppCrudTestCase(unittest.TestCase):
             "numero_energia": "9876",
             "numero_agua": "5432",
             "adm_propriedade": "1",
+            "imobiliaria": "1",
             "energia_solar": "0",
             "unidade_geradora": "UG-01",
             "percentual_energia": "35,5",
@@ -142,6 +143,7 @@ class AppCrudTestCase(unittest.TestCase):
         property_data = created.get_json()
         self.assertEqual(property_data["responsavel"], owner["id"])
         self.assertEqual(property_data["aluguel"], 2500.0)
+        self.assertEqual(property_data["imobiliaria"], 1)
         self.assertEqual(property_data["percentual_energia"], 35.5)
         self.assertEqual(property_data["endereco"], "PRAÇA DA SÉ")
         self.assertEqual(property_data["responsavel_nome"], "PROPRIETÁRIO DO IMÓVEL")
@@ -370,7 +372,7 @@ class AppCrudTestCase(unittest.TestCase):
             row[1] for row in connection.execute("PRAGMA table_info(imoveis)").fetchall()
         }
         preserved = connection.execute(
-            "SELECT apelido, cidade, aluguel FROM imoveis WHERE id = 1"
+            "SELECT apelido, cidade, aluguel, imobiliaria FROM imoveis WHERE id = 1"
         ).fetchone()
         table_names = {
             row[0]
@@ -381,8 +383,9 @@ class AppCrudTestCase(unittest.TestCase):
         connection.close()
 
         self.assertIn("endereco", column_names)
+        self.assertIn("imobiliaria", column_names)
         self.assertIn("contratos", table_names)
-        self.assertEqual(preserved, ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0))
+        self.assertEqual(preserved, ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0, 0))
 
 
 if __name__ == "__main__":
