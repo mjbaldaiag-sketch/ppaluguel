@@ -9,7 +9,12 @@
             description: "Gerencie as pessoas responsáveis pelos seus imóveis.",
             empty: "Ainda não há proprietários cadastrados.",
             emptyDescription: "Cadastre o primeiro proprietário para começar a relacionar seus imóveis.",
-            headers: ["Proprietário", "CPF", "Contato", "E-mail"],
+            columns: [
+                { key: "nome_completo", label: "Proprietário", type: "text", value: (record) => record.nome_completo },
+                { key: "cpf", label: "CPF", type: "digits", value: (record) => record.cpf },
+                { key: "contato", label: "Contato", type: "digits", value: (record) => record.contato },
+                { key: "email", label: "E-mail", type: "text", value: (record) => record.email },
+            ],
         },
         inquilinos: {
             endpoint: "/api/inquilinos-clientes",
@@ -18,7 +23,12 @@
             description: "Centralize os dados de inquilinos e clientes.",
             empty: "Ainda não há inquilinos ou clientes cadastrados.",
             emptyDescription: "Cadastre seu primeiro inquilino ou cliente para manter os contatos organizados.",
-            headers: ["Inquilino / Cliente", "CPF", "Contato", "E-mail"],
+            columns: [
+                { key: "nome_completo", label: "Inquilino / Cliente", type: "text", value: (record) => record.nome_completo },
+                { key: "cpf", label: "CPF", type: "digits", value: (record) => record.cpf },
+                { key: "contato", label: "Contato", type: "digits", value: (record) => record.contato },
+                { key: "email", label: "E-mail", type: "text", value: (record) => record.email },
+            ],
         },
         imoveis: {
             endpoint: "/api/imoveis",
@@ -27,7 +37,19 @@
             description: "Acompanhe seus imóveis, responsáveis e dados de consumo.",
             empty: "Ainda não há imóveis cadastrados.",
             emptyDescription: "Cadastre um proprietário primeiro e depois adicione o seu primeiro imóvel.",
-            headers: ["Tipo de imóvel", "Imóvel", "Responsável", "Endereço", "Aluguel referência", "Energia solar"],
+            columns: [
+                { key: "tipo_imovel", label: "Tipo de imóvel", type: "text", value: (record) => record.tipo_imovel },
+                { key: "apelido", label: "Imóvel", type: "text", value: (record) => record.apelido },
+                { key: "responsavel_nome", label: "Responsável", type: "text", value: (record) => record.responsavel_nome },
+                {
+                    key: "endereco",
+                    label: "Endereço",
+                    type: "text",
+                    value: (record) => [record.endereco, record.numero, record.cidade, record.estado].filter(Boolean).join(" "),
+                },
+                { key: "aluguel", label: "Aluguel referência", type: "number", value: (record) => record.aluguel },
+                { key: "energia_solar", label: "Energia solar", type: "boolean", value: (record) => record.energia_solar },
+            ],
         },
         contratos: {
             endpoint: "/api/contratos",
@@ -36,7 +58,14 @@
             description: "Gerencie os contratos de aluguel e seus vínculos.",
             empty: "Ainda não há contratos cadastrados.",
             emptyDescription: "Cadastre o primeiro contrato relacionando um imóvel e um inquilino/cliente.",
-            headers: ["Imóvel", "Inquilino / Cliente", "Início", "Fim", "Aluguel", "Caução"],
+            columns: [
+                { key: "imovel_nome", label: "Imóvel", type: "text", value: (record) => record.imovel_nome },
+                { key: "inquilino_nome", label: "Inquilino / Cliente", type: "text", value: (record) => record.inquilino_nome },
+                { key: "data_inicio", label: "Início", type: "date", value: (record) => record.data_inicio },
+                { key: "data_fim", label: "Fim", type: "date", value: (record) => record.data_fim },
+                { key: "valor_aluguel", label: "Aluguel", type: "number", value: (record) => record.valor_aluguel },
+                { key: "valor_caucao", label: "Caução", type: "number", value: (record) => record.valor_caucao },
+            ],
         },
     };
 
@@ -66,6 +95,7 @@
         "TERRENO",
     ];
     const VIA_CEP_FIELDS = ["endereco", "estado", "cidade", "bairro"];
+    const textCollator = new Intl.Collator("pt-BR", { numeric: true, sensitivity: "accent" });
 
     const state = {
         module: "proprietarios",
@@ -77,6 +107,7 @@
         owners: [],
         properties: [],
         clients: [],
+        sortByModule: {},
         viacep: {
             lastCep: "",
             requestId: 0,
@@ -154,6 +185,7 @@
             }
         });
         elements.clearCepButton.addEventListener("click", clearCep);
+        elements.recordsHead.addEventListener("click", handleSortHeaderClick);
         elements.recordsBody.addEventListener("click", handleTableAction);
         elements.menuToggle.addEventListener("click", toggleSidebar);
         elements.sidebarBackdrop.addEventListener("click", closeSidebar);
@@ -302,23 +334,143 @@
 
     function renderTable() {
         const config = moduleConfig[state.module];
-        elements.recordsHead.innerHTML = `<tr>${config.headers.map((header) => `<th>${header}</th>`).join("")}<th class="actions-cell">Ações</th></tr>`;
-        elements.recordsBody.innerHTML = state.records.map((record) => renderRow(record)).join("");
+        const sort = state.sortByModule[state.module] || null;
+        elements.recordsHead.innerHTML = `<tr>${config.columns.map((column) => renderSortHeader(column, sort)).join("")}<th class="actions-cell" scope="col">Ações</th></tr>`;
+        elements.recordsBody.innerHTML = sortRecords(state.records, config.columns, sort)
+            .map((record) => renderRow(record, sort))
+            .join("");
         elements.recordCount.textContent = `${state.records.length} ${state.records.length === 1 ? "registro" : "registros"}`;
         elements.emptyTitle.textContent = config.empty;
         elements.emptyDescription.textContent = config.emptyDescription;
         elements.emptyState.hidden = state.records.length !== 0;
     }
 
-    function renderRow(record) {
+    function renderSortHeader(column, sort) {
+        const isActive = sort && sort.key === column.key;
+        const direction = isActive ? sort.direction : null;
+        const nextDirection = direction === "asc" ? "decrescente" : "crescente";
+        const ariaSort = direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none";
+        const indicatorClass = direction ? ` is-${direction}` : "";
+        const activeClass = isActive ? " is-sorted" : "";
+
+        return `<th class="sortable-header${activeClass}" scope="col" aria-sort="${ariaSort}">
+            <button class="sort-button" type="button" data-sort-key="${column.key}" aria-label="Ordenar por ${escapeHtml(column.label)} em ordem ${nextDirection}">
+                <span>${escapeHtml(column.label)}</span>
+                <span class="sort-indicator${indicatorClass}" aria-hidden="true"><span class="sort-arrow sort-arrow-up">▲</span><span class="sort-arrow sort-arrow-down">▼</span></span>
+            </button>
+        </th>`;
+    }
+
+    function handleSortHeaderClick(event) {
+        const button = event.target.closest("[data-sort-key]");
+        if (!button || !elements.recordsHead.contains(button)) {
+            return;
+        }
+
+        const currentSort = state.sortByModule[state.module];
+        const direction = currentSort && currentSort.key === button.dataset.sortKey && currentSort.direction === "asc"
+            ? "desc"
+            : "asc";
+        state.sortByModule[state.module] = { key: button.dataset.sortKey, direction };
+        renderTable();
+    }
+
+    function sortRecords(records, columns, sort) {
+        if (!sort) {
+            return records.slice();
+        }
+
+        const column = columns.find((item) => item.key === sort.key);
+        if (!column) {
+            return records.slice();
+        }
+
+        return records
+            .map((record, index) => ({ record, index }))
+            .sort((left, right) => {
+                const leftValue = normalizeSortValue(column.value(left.record), column.type);
+                const rightValue = normalizeSortValue(column.value(right.record), column.type);
+                const leftMissing = leftValue === null;
+                const rightMissing = rightValue === null;
+
+                if (leftMissing || rightMissing) {
+                    if (leftMissing && rightMissing) {
+                        return left.index - right.index;
+                    }
+                    return leftMissing ? 1 : -1;
+                }
+
+                const comparison = compareSortValues(leftValue, rightValue, column.type);
+                if (comparison === 0) {
+                    return left.index - right.index;
+                }
+                return sort.direction === "desc" ? -comparison : comparison;
+            })
+            .map(({ record }) => record);
+    }
+
+    function normalizeSortValue(value, type) {
+        if (value === null || value === undefined) {
+            return null;
+        }
+
+        if (type === "text") {
+            const text = String(value).trim();
+            return text || null;
+        }
+
+        if (type === "digits") {
+            const digits = onlyDigits(value);
+            return digits || null;
+        }
+
+        if (type === "number") {
+            if (String(value).trim() === "") {
+                return null;
+            }
+            const number = Number(value);
+            return Number.isFinite(number) ? number : null;
+        }
+
+        if (type === "date") {
+            const timestamp = Date.parse(String(value).trim());
+            return Number.isNaN(timestamp) ? null : timestamp;
+        }
+
+        if (type === "boolean") {
+            const normalized = String(value).trim().toLowerCase();
+            if (value === true || normalized === "1" || normalized === "true" || normalized === "sim") {
+                return 1;
+            }
+            if (value === false || normalized === "0" || normalized === "false" || normalized === "nao") {
+                return 0;
+            }
+            return null;
+        }
+
+        return String(value).trim() || null;
+    }
+
+    function compareSortValues(left, right, type) {
+        if (type === "text") {
+            return textCollator.compare(left, right);
+        }
+        return left < right ? -1 : left > right ? 1 : 0;
+    }
+
+    function sortCellClass(sort, key) {
+        return sort && sort.key === key ? "is-sorted-column" : "";
+    }
+
+    function renderRow(record, sort) {
         if (state.module === "contratos") {
             return `<tr>
-                <td><div class="property-cell"><span class="row-avatar property">C</span><span>${escapeHtml(record.imovel_nome)}<small class="subtle-text">Código #${record.imovel_id}</small></span></div></td>
-                <td><div class="person-cell"><span class="row-avatar">${initials(record.inquilino_nome)}</span><span>${escapeHtml(record.inquilino_nome)}<small class="subtle-text">Código #${record.inquilino_id}</small></span></div></td>
-                <td>${escapeHtml(formatDate(record.data_inicio))}</td>
-                <td>${escapeHtml(formatDate(record.data_fim))}</td>
-                <td>${formatCurrency(record.valor_aluguel)}</td>
-                <td>${formatCurrency(record.valor_caucao)}</td>
+                <td class="${sortCellClass(sort, "imovel_nome")}"><div class="property-cell"><span class="row-avatar property">C</span><span>${escapeHtml(record.imovel_nome)}<small class="subtle-text">Código #${record.imovel_id}</small></span></div></td>
+                <td class="${sortCellClass(sort, "inquilino_nome")}"><div class="person-cell"><span class="row-avatar">${initials(record.inquilino_nome)}</span><span>${escapeHtml(record.inquilino_nome)}<small class="subtle-text">Código #${record.inquilino_id}</small></span></div></td>
+                <td class="${sortCellClass(sort, "data_inicio")}">${escapeHtml(formatDate(record.data_inicio))}</td>
+                <td class="${sortCellClass(sort, "data_fim")}">${escapeHtml(formatDate(record.data_fim))}</td>
+                <td class="${sortCellClass(sort, "valor_aluguel")}">${formatCurrency(record.valor_aluguel)}</td>
+                <td class="${sortCellClass(sort, "valor_caucao")}">${formatCurrency(record.valor_caucao)}</td>
                 <td class="actions-cell">${actionButtons(record.id)}</td>
             </tr>`;
         }
@@ -332,21 +484,21 @@
             ].filter(Boolean).join(" · ") || "Endereço não informado";
             const solar = Number(record.energia_solar) === 1;
             return `<tr>
-                <td>${escapeHtml(record.tipo_imovel || "Não informado")}</td>
-                <td><div class="property-cell"><span class="row-avatar property">⌂</span><span>${escapeHtml(record.apelido)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
-                <td>${escapeHtml(record.responsavel_nome || "—")}</td>
-                <td>${escapeHtml(location)}</td>
-                <td>${formatCurrency(record.aluguel)}</td>
-                <td><span class="status-pill ${solar ? "" : "off"}">${solar ? "Sim" : "Não"}</span></td>
+                <td class="${sortCellClass(sort, "tipo_imovel")}">${escapeHtml(record.tipo_imovel || "Não informado")}</td>
+                <td class="${sortCellClass(sort, "apelido")}"><div class="property-cell"><span class="row-avatar property">⌂</span><span>${escapeHtml(record.apelido)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
+                <td class="${sortCellClass(sort, "responsavel_nome")}">${escapeHtml(record.responsavel_nome || "—")}</td>
+                <td class="${sortCellClass(sort, "endereco")}">${escapeHtml(location)}</td>
+                <td class="${sortCellClass(sort, "aluguel")}">${formatCurrency(record.aluguel)}</td>
+                <td class="${sortCellClass(sort, "energia_solar")}"><span class="status-pill ${solar ? "" : "off"}">${solar ? "Sim" : "Não"}</span></td>
                 <td class="actions-cell">${actionButtons(record.id)}</td>
             </tr>`;
         }
 
         return `<tr>
-            <td><div class="person-cell"><span class="row-avatar">${initials(record.nome_completo)}</span><span>${escapeHtml(record.nome_completo)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
-            <td>${formatCpf(record.cpf)}</td>
-            <td>${formatPhone(record.contato)}</td>
-            <td>${escapeHtml(record.email || "—")}</td>
+            <td class="${sortCellClass(sort, "nome_completo")}"><div class="person-cell"><span class="row-avatar">${initials(record.nome_completo)}</span><span>${escapeHtml(record.nome_completo)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
+            <td class="${sortCellClass(sort, "cpf")}">${formatCpf(record.cpf)}</td>
+            <td class="${sortCellClass(sort, "contato")}">${formatPhone(record.contato)}</td>
+            <td class="${sortCellClass(sort, "email")}">${escapeHtml(record.email || "—")}</td>
             <td class="actions-cell">${actionButtons(record.id)}</td>
         </tr>`;
     }

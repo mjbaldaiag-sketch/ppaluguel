@@ -532,6 +532,74 @@ h3 {
     white-space: nowrap;
 }
 
+.records-table th.sortable-header {
+    padding: 0;
+}
+
+.sort-button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-height: 57px;
+    padding: 18px 20px;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-align: left;
+    text-transform: inherit;
+    transition: background .15s ease, color .15s ease;
+}
+
+.sort-button:hover {
+    background: rgba(156, 167, 183, .045);
+    color: #8794a7;
+}
+
+.sort-button:focus-visible {
+    position: relative;
+    z-index: 1;
+}
+
+.sort-indicator {
+    display: inline-flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    gap: 2px;
+    color: currentColor;
+    font-size: 8px;
+    line-height: .62;
+    opacity: .35;
+    transition: opacity .15s ease;
+}
+
+.sort-indicator.is-asc,
+.sort-indicator.is-desc {
+    opacity: .72;
+}
+
+.sort-arrow {
+    display: block;
+    opacity: .4;
+}
+
+.sort-indicator.is-asc .sort-arrow-up,
+.sort-indicator.is-desc .sort-arrow-down {
+    opacity: 1;
+}
+
+.sortable-header.is-sorted,
+.records-table td.is-sorted-column {
+    background: rgba(156, 167, 183, .045);
+}
+
+.sortable-header.is-sorted {
+    color: #8d99aa;
+}
+
 .records-table td {
     padding: 16px 20px;
     border-bottom: 1px solid #f0f3f8;
