@@ -52,6 +52,7 @@ class AppCrudTestCase(unittest.TestCase):
             "apelido": "Apartamento Centro",
             "responsavel": owner_id,
             "cep": "01001-000",
+            "endereco": "Praça da Sé",
             "estado": "SP",
             "cidade": "São Paulo",
             "bairro": "Sé",
@@ -131,6 +132,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(property_data["responsavel"], owner["id"])
         self.assertEqual(property_data["aluguel"], 2500.0)
         self.assertEqual(property_data["percentual_energia"], 35.5)
+        self.assertEqual(property_data["endereco"], "PRAÇA DA SÉ")
         self.assertEqual(property_data["responsavel_nome"], "PROPRIETÁRIO DO IMÓVEL")
 
         blocked = self.client.delete(f"/api/proprietarios/{owner['id']}")
@@ -212,6 +214,61 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(records[0]["profissao"], "PROFISSÃO ANTIGA")
         self.assertEqual(records[0]["estado_civil"], "CASADO(A)")
         self.assertEqual(records[0]["email"], "email@exemplo.com")
+
+    def test_existing_database_migrates_endereco_without_recreating_data(self):
+        database = Path(self.temp_dir.name) / "legacy.db"
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE proprietario (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            INSERT INTO proprietario (nome_completo) VALUES ('PROPRIETÁRIO LEGADO');
+            CREATE TABLE imoveis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                apelido TEXT NOT NULL,
+                responsavel INTEGER NOT NULL,
+                cep TEXT,
+                estado TEXT,
+                cidade TEXT,
+                bairro TEXT,
+                numero TEXT,
+                complemento TEXT,
+                inscricao_mun TEXT,
+                aluguel REAL NOT NULL DEFAULT 0,
+                numero_energia TEXT,
+                numero_agua TEXT,
+                adm_propriedade INTEGER NOT NULL DEFAULT 0,
+                energia_solar INTEGER NOT NULL DEFAULT 0,
+                unidade_geradora TEXT,
+                percentual_energia REAL
+            );
+            INSERT INTO imoveis (apelido, responsavel, cidade, aluguel)
+            VALUES ('IMÓVEL LEGADO', 1, 'CIDADE LEGADA', 1200);
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        create_app({"TESTING": True, "DATABASE": str(database)})
+        connection = sqlite3.connect(database)
+        column_names = {
+            row[1] for row in connection.execute("PRAGMA table_info(imoveis)").fetchall()
+        }
+        preserved = connection.execute(
+            "SELECT apelido, cidade, aluguel FROM imoveis WHERE id = 1"
+        ).fetchone()
+        connection.close()
+
+        self.assertIn("endereco", column_names)
+        self.assertEqual(preserved, ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0))
 
 
 if __name__ == "__main__":

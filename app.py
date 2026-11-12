@@ -64,6 +64,7 @@ PROPERTY_FIELDS = (
     "apelido",
     "responsavel",
     "cep",
+    "endereco",
     "estado",
     "cidade",
     "bairro",
@@ -150,6 +151,7 @@ def init_db() -> None:
             apelido TEXT NOT NULL,
             responsavel INTEGER NOT NULL,
             cep TEXT,
+            endereco TEXT,
             estado TEXT,
             cidade TEXT,
             bairro TEXT,
@@ -170,8 +172,19 @@ def init_db() -> None:
         );
         """
     )
+    migrate_database(db)
     normalize_existing_data(db)
     db.commit()
+
+
+def migrate_database(db: sqlite3.Connection) -> None:
+    """Apply additive schema changes without recreating existing tables."""
+
+    columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(imoveis)").fetchall()
+    }
+    if "endereco" not in columns:
+        db.execute("ALTER TABLE imoveis ADD COLUMN endereco TEXT")
 
 
 def normalize_existing_data(db: sqlite3.Connection) -> None:
@@ -183,6 +196,7 @@ def normalize_existing_data(db: sqlite3.Connection) -> None:
         "imoveis": (
             "apelido",
             "cep",
+            "endereco",
             "estado",
             "cidade",
             "bairro",
@@ -370,6 +384,7 @@ def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
         nickname,
         responsible_id,
         normalize_digits(data.get("cep"), "cep", {8}),
+        clean_text(data.get("endereco")),
         estado,
         clean_text(data.get("cidade")),
         clean_text(data.get("bairro")),
@@ -580,10 +595,10 @@ def register_routes(app: Flask) -> None:
         cursor = db.execute(
             """
             INSERT INTO imoveis
-                (apelido, responsavel, cep, estado, cidade, bairro, numero,
+                (apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
                  complemento, inscricao_mun, aluguel, numero_energia, numero_agua,
                  adm_propriedade, energia_solar, unidade_geradora, percentual_energia)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -610,8 +625,8 @@ def register_routes(app: Flask) -> None:
             db.execute(
                 """
                 UPDATE imoveis
-                SET apelido = ?, responsavel = ?, cep = ?, estado = ?, cidade = ?,
-                    bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
+                SET apelido = ?, responsavel = ?, cep = ?, endereco = ?, estado = ?,
+                    cidade = ?, bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
                     aluguel = ?, numero_energia = ?, numero_agua = ?,
                     adm_propriedade = ?, energia_solar = ?, unidade_geradora = ?,
                     percentual_energia = ?

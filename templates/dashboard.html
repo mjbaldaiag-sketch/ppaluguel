@@ -243,8 +243,12 @@
                         </select>
                     </label>
                     <label class="form-field">
-                        <span>CEP</span>
-                        <input type="text" data-field="cep" data-mask="cep" inputmode="numeric" placeholder="00000-000">
+                        <span>CEP <small class="field-status" id="cep-lookup-status" aria-live="polite"></small></span>
+                        <input type="text" data-field="cep" data-mask="cep" inputmode="numeric" placeholder="00000-000" autocomplete="postal-code">
+                    </label>
+                    <label class="form-field form-field-wide">
+                        <span>Endereço</span>
+                        <input type="text" data-field="endereco" autocomplete="street-address" placeholder="Preenchido automaticamente pelo CEP">
                     </label>
                     <label class="form-field">
                         <span>Estado</span>

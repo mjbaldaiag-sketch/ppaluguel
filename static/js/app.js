@@ -27,7 +27,7 @@
             description: "Acompanhe seus imóveis, responsáveis e dados de consumo.",
             empty: "Ainda não há imóveis cadastrados.",
             emptyDescription: "Cadastre um proprietário primeiro e depois adicione o seu primeiro imóvel.",
-            headers: ["Imóvel", "Responsável", "Localização", "Aluguel", "Energia solar"],
+            headers: ["Imóvel", "Responsável", "Endereço", "Aluguel", "Energia solar"],
         },
     };
 
@@ -49,6 +49,7 @@
         ["SEPARADO(A)", "Separado(a)"],
         ["UNIÃO ESTÁVEL", "União estável"],
     ];
+    const VIA_CEP_FIELDS = ["endereco", "estado", "cidade", "bairro"];
 
     const state = {
         module: "proprietarios",
@@ -57,6 +58,13 @@
         modalMode: "create",
         modalModule: "proprietarios",
         owners: [],
+        viacep: {
+            lastCep: "",
+            requestId: 0,
+            controller: null,
+            autoValues: {},
+            dirtyFields: {},
+        },
     };
 
     const elements = {};
@@ -142,12 +150,27 @@
         });
 
         elements.form.querySelectorAll("[data-mask]").forEach((input) => {
-            input.addEventListener("input", () => applyMask(input));
+            input.addEventListener("input", () => {
+                applyMask(input);
+                if (input.dataset.mask === "cep") {
+                    handleCepInput(input);
+                }
+            });
         });
         elements.form.querySelectorAll('input:not([data-mask]):not([data-field="email"])').forEach((input) => {
             input.addEventListener("input", () => {
                 input.value = input.value.toUpperCase();
             });
+        });
+        elements.form.querySelectorAll("[data-field]").forEach((field) => {
+            if (!VIA_CEP_FIELDS.includes(field.dataset.field)) {
+                return;
+            }
+            const markAsManual = () => {
+                state.viacep.dirtyFields[field.dataset.field] = true;
+            };
+            field.addEventListener("input", markAsManual);
+            field.addEventListener("change", markAsManual);
         });
     }
 
@@ -244,7 +267,12 @@
 
     function renderRow(record) {
         if (state.module === "imoveis") {
-            const location = [record.cidade, record.estado].filter(Boolean).join(" / ") || "Endereço não informado";
+            const location = [
+                record.endereco,
+                record.numero ? `Nº ${record.numero}` : "",
+                record.cidade,
+                record.estado,
+            ].filter(Boolean).join(" · ") || "Endereço não informado";
             const solar = Number(record.energia_solar) === 1;
             return `<tr>
                 <td><div class="property-cell"><span class="row-avatar property">⌂</span><span>${escapeHtml(record.apelido)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
@@ -369,6 +397,7 @@
             }
         });
         if (state.modalModule === "imoveis") {
+            resetCepLookup();
             populateOwnerSelect();
         }
     }
@@ -414,6 +443,114 @@
             select.value = currentValue;
         }
         select.disabled = state.owners.length === 0;
+    }
+
+    function resetCepLookup() {
+        if (state.viacep.controller) {
+            state.viacep.controller.abort();
+        }
+        state.viacep.lastCep = "";
+        state.viacep.requestId += 1;
+        state.viacep.controller = null;
+        state.viacep.autoValues = {};
+        state.viacep.dirtyFields = {};
+        setCepStatus("", "");
+    }
+
+    function handleCepInput(input) {
+        const cep = onlyDigits(input.value);
+        if (cep.length < 8) {
+            if (state.viacep.controller) {
+                state.viacep.controller.abort();
+            }
+            state.viacep.requestId += 1;
+            state.viacep.controller = null;
+            state.viacep.lastCep = "";
+            setCepStatus("", "");
+            return;
+        }
+        if (cep.length === 8 && cep !== state.viacep.lastCep) {
+            lookupCep(cep);
+        }
+    }
+
+    async function lookupCep(cep) {
+        if (state.viacep.controller) {
+            state.viacep.controller.abort();
+        }
+
+        const requestId = ++state.viacep.requestId;
+        const controller = new AbortController();
+        state.viacep.controller = controller;
+        state.viacep.lastCep = cep;
+        setCepStatus("loading", "Consultando CEP...");
+
+        try {
+            const response = await fetch(`https://viacep.com.br/ws/${cep}/json/`, {
+                signal: controller.signal,
+                headers: { Accept: "application/json" },
+            });
+            if (!response.ok) {
+                throw new Error("Não foi possível consultar o CEP agora.");
+            }
+            const data = await response.json();
+            if (requestId !== state.viacep.requestId) {
+                return;
+            }
+            if (data.erro) {
+                state.viacep.lastCep = "";
+                setCepStatus("error", "CEP não encontrado.");
+                showToast("O CEP informado não foi encontrado.", "error");
+                return;
+            }
+
+            applyViaCepData(data);
+            setCepStatus("success", "Endereço localizado.");
+        } catch (error) {
+            if (error.name === "AbortError" || requestId !== state.viacep.requestId) {
+                return;
+            }
+            state.viacep.lastCep = "";
+            setCepStatus("error", "Falha na consulta.");
+            showToast("Não foi possível consultar o ViaCEP. Você pode preencher o endereço manualmente.", "error");
+        } finally {
+            if (requestId === state.viacep.requestId) {
+                state.viacep.controller = null;
+            }
+        }
+    }
+
+    function applyViaCepData(data) {
+        const section = getActiveSection();
+        const viaCepValues = {
+            endereco: String(data.logradouro || "").trim().toUpperCase(),
+            estado: String(data.uf || "").trim().toUpperCase(),
+            cidade: String(data.localidade || "").trim().toUpperCase(),
+            bairro: String(data.bairro || "").trim().toUpperCase(),
+        };
+
+        Object.entries(viaCepValues).forEach(([fieldName, value]) => {
+            const field = section.querySelector(`[data-field="${fieldName}"]`);
+            if (!field) {
+                return;
+            }
+            const currentValue = field.value.trim().toUpperCase();
+            const previousAutoValue = state.viacep.autoValues[fieldName] || "";
+            const wasManuallyChanged = state.viacep.dirtyFields[fieldName] === true;
+            if (!wasManuallyChanged && (!currentValue || currentValue === previousAutoValue)) {
+                field.value = value;
+            }
+        });
+        state.viacep.autoValues = viaCepValues;
+    }
+
+    function setCepStatus(type, message) {
+        const status = document.getElementById("cep-lookup-status");
+        if (!status) {
+            return;
+        }
+        status.className = `field-status ${type ? `is-${type}` : ""}`.trim();
+        status.textContent = message;
     }
 
     async function handleFormSubmit(event) {
