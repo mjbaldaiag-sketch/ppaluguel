@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | PPA Imóveis{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+    <aside class="sidebar" id="sidebar" aria-label="Navegação principal">
+        <div class="brand">
+            <div class="brand-mark" aria-hidden="true">P</div>
+            <div>
+                <strong>PPA</strong>
+                <span>Gestão de imóveis</span>
+            </div>
+        </div>
+
+        <div class="sidebar-label">Módulos</div>
+        <nav class="main-nav">
+            <button class="nav-item is-active" type="button" data-module="proprietarios">
+                <span class="nav-icon" aria-hidden="true">⌂</span>
+                <span>Proprietários</span>
+            </button>
+            <button class="nav-item" type="button" data-module="inquilinos">
+                <span class="nav-icon" aria-hidden="true">♙</span>
+                <span>Inquilinos / Clientes</span>
+            </button>
+            <button class="nav-item" type="button" data-module="imoveis">
+                <span class="nav-icon" aria-hidden="true">▦</span>
+                <span>Imóveis</span>
+            </button>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="status-dot"></div>
+            <div>
+                <strong>Sistema online</strong>
+                <span>Ambiente local</span>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <header class="topbar">
+            <button class="icon-button menu-toggle" id="menu-toggle" type="button" aria-label="Abrir menu" aria-expanded="false">
+                <span></span><span></span><span></span>
+            </button>
+            <div class="topbar-context">
+                <span class="eyebrow">Workspace</span>
+                <span class="breadcrumb">Gestão imobiliária <span>/</span> <strong id="breadcrumb-module">Proprietários</strong></span>
+            </div>
+            <div class="topbar-user" aria-label="Usuário atual">
+                <div class="avatar">P</div>
+                <div class="user-copy">
+                    <strong>Administrador</strong>
+                    <span>Conta local</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="page-content">
+            <section class="page-heading">
+                <div>
+                    <span class="eyebrow">Visão geral</span>
+                    <h1>Olá, administrador <span class="wave" aria-hidden="true">✦</span></h1>
+                    <p>Acompanhe seus cadastros e mantenha sua operação organizada.</p>
+                </div>
+                <button class="primary-button" id="new-record-button" type="button">
+                    <span class="button-plus" aria-hidden="true">+</span>
+                    <span id="new-record-label">Novo proprietário</span>
+                </button>
+            </section>
+
+            <section class="summary-grid" aria-label="Resumo dos cadastros">
+                <article class="summary-card summary-card-blue">
+                    <div class="card-icon" aria-hidden="true">♙</div>
+                    <div class="card-data">
+                        <span>Proprietários</span>
+                        <strong id="count-proprietarios">0</strong>
+                        <small>pessoas cadastradas</small>
+                    </div>
+                    <span class="card-decoration" aria-hidden="true">↗</span>
+                </article>
+                <article class="summary-card summary-card-purple">
+                    <div class="card-icon" aria-hidden="true">◉</div>
+                    <div class="card-data">
+                        <span>Inquilinos / Clientes</span>
+                        <strong id="count-inquilinos">0</strong>
+                        <small>pessoas cadastradas</small>
+                    </div>
+                    <span class="card-decoration" aria-hidden="true">↗</span>
+                </article>
+                <article class="summary-card summary-card-green">
+                    <div class="card-icon" aria-hidden="true">▦</div>
+                    <div class="card-data">
+                        <span>Imóveis</span>
+                        <strong id="count-imoveis">0</strong>
+                        <small>unidades cadastradas</small>
+                    </div>
+                    <span class="card-decoration" aria-hidden="true">↗</span>
+                </article>
+            </section>
+
+            <section class="module-section">
+                <div class="module-heading">
+                    <div>
+                        <span class="eyebrow">Cadastros</span>
+                        <h2 id="module-title">Proprietários</h2>
+                        <p id="module-description">Gerencie as pessoas responsáveis pelos seus imóveis.</p>
+                    </div>
+                    <div class="module-meta">
+                        <span class="record-count" id="record-count">0 registros</span>
+                        <button class="secondary-button" id="refresh-button" type="button" aria-label="Atualizar listagem">↻ <span>Atualizar</span></button>
+                    </div>
+                </div>
+
+                <div class="table-card">
+                    <div class="table-scroll">
+                        <table class="records-table">
+                            <thead id="records-head"></thead>
+                            <tbody id="records-body"></tbody>
+                        </table>
+                    </div>
+                    <div class="empty-state" id="empty-state" hidden>
+                        <div class="empty-icon" aria-hidden="true">⌁</div>
+                        <h3 id="empty-title">Nenhum registro encontrado</h3>
+                        <p id="empty-description">Comece adicionando o primeiro cadastro deste módulo.</p>
+                        <button class="secondary-button" id="empty-action" type="button">Adicionar primeiro registro</button>
+                    </div>
+                    <div class="loading-state" id="loading-state" hidden>
+                        <div class="spinner" aria-hidden="true"></div>
+                        <span>Carregando registros...</span>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+</div>
+
+<div class="modal-overlay" id="record-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden>
+    <div class="modal-card modal-large">
+        <div class="modal-header">
+            <div>
+                <span class="eyebrow" id="modal-eyebrow">Cadastro</span>
+                <h2 id="modal-title">Novo proprietário</h2>
+                <p id="modal-description">Preencha os dados abaixo para cadastrar um novo registro.</p>
+            </div>
+            <button class="modal-close" id="modal-close" type="button" aria-label="Fechar">×</button>
+        </div>
+
+        <form id="record-form" novalidate>
+            <div class="form-section" data-form-section="proprietarios">
+                <div class="form-section-heading">
+                    <h3>Dados pessoais</h3>
+                    <span>Campos com <b>*</b> são obrigatórios.</span>
+                </div>
+                <div class="form-grid">
+                    <label class="form-field form-field-wide">
+                        <span>Nome completo <b>*</b></span>
+                        <input type="text" data-field="nome_completo" autocomplete="name" aria-required="true">
+                    </label>
+                    <label class="form-field">
+                        <span>CPF</span>
+                        <input type="text" data-field="cpf" data-mask="cpf" inputmode="numeric" placeholder="000.000.000-00">
+                    </label>
+                    <label class="form-field">
+                        <span>RG</span>
+                        <input type="text" data-field="rg" data-mask="rg" inputmode="numeric" placeholder="00.000.000-0">
+                    </label>
+                    <label class="form-field">
+                        <span>Contato</span>
+                        <input type="tel" data-field="contato" data-mask="phone" inputmode="tel" placeholder="(00) 00000-0000">
+                    </label>
+                    <label class="form-field">
+                        <span>Profissão</span>
+                        <input type="text" data-field="profissao">
+                    </label>
+                    <label class="form-field">
+                        <span>Estado civil</span>
+                        <select data-field="estado_civil">
+                            <option value="">Selecione</option>
+                        </select>
+                    </label>
+                    <label class="form-field form-field-wide">
+                        <span>E-mail</span>
+                        <input type="email" data-field="email" autocomplete="email" placeholder="nome@exemplo.com">
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-section" data-form-section="inquilinos" hidden>
+                <div class="form-section-heading">
+                    <h3>Dados pessoais</h3>
+                    <span>Campos com <b>*</b> são obrigatórios.</span>
+                </div>
+                <div class="form-grid">
+                    <label class="form-field form-field-wide">
+                        <span>Nome completo <b>*</b></span>
+                        <input type="text" data-field="nome_completo" autocomplete="name" aria-required="true">
+                    </label>
+                    <label class="form-field">
+                        <span>CPF</span>
+                        <input type="text" data-field="cpf" data-mask="cpf" inputmode="numeric" placeholder="000.000.000-00">
+                    </label>
+                    <label class="form-field">
+                        <span>RG</span>
+                        <input type="text" data-field="rg" data-mask="rg" inputmode="numeric" placeholder="00.000.000-0">
+                    </label>
+                    <label class="form-field">
+                        <span>Contato</span>
+                        <input type="tel" data-field="contato" data-mask="phone" inputmode="tel" placeholder="(00) 00000-0000">
+                    </label>
+                    <label class="form-field">
+                        <span>Profissão</span>
+                        <input type="text" data-field="profissao">
+                    </label>
+                    <label class="form-field">
+                        <span>Estado civil</span>
+                        <select data-field="estado_civil">
+                            <option value="">Selecione</option>
+                        </select>
+                    </label>
+                    <label class="form-field form-field-wide">
+                        <span>E-mail</span>
+                        <input type="email" data-field="email" autocomplete="email" placeholder="nome@exemplo.com">
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-section" data-form-section="imoveis" hidden>
+                <div class="form-section-heading">
+                    <h3>Identificação e endereço</h3>
+                    <span>Campos com <b>*</b> são obrigatórios.</span>
+                </div>
+                <div class="form-grid">
+                    <label class="form-field form-field-wide">
+                        <span>Apelido do imóvel <b>*</b></span>
+                        <input type="text" data-field="apelido" placeholder="Ex.: Apartamento Centro">
+                    </label>
+                    <label class="form-field">
+                        <span>Proprietário responsável <b>*</b></span>
+                        <select data-field="responsavel" id="responsavel-select">
+                            <option value="">Selecione um proprietário</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>CEP</span>
+                        <input type="text" data-field="cep" data-mask="cep" inputmode="numeric" placeholder="00000-000">
+                    </label>
+                    <label class="form-field">
+                        <span>Estado</span>
+                        <select data-field="estado">
+                            <option value="">Selecione a UF</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Cidade</span>
+                        <input type="text" data-field="cidade">
+                    </label>
+                    <label class="form-field">
+                        <span>Bairro</span>
+                        <input type="text" data-field="bairro">
+                    </label>
+                    <label class="form-field">
+                        <span>Número</span>
+                        <input type="text" data-field="numero">
+                    </label>
+                    <label class="form-field">
+                        <span>Complemento</span>
+                        <input type="text" data-field="complemento">
+                    </label>
+                    <label class="form-field form-field-wide">
+                        <span>Inscrição municipal</span>
+                        <input type="text" data-field="inscricao_mun">
+                    </label>
+                </div>
+
+                <div class="form-section-heading form-section-heading-spaced">
+                    <h3>Dados financeiros e consumo</h3>
+                    <span>Valores monetários usam o formato brasileiro.</span>
+                </div>
+                <div class="form-grid">
+                    <label class="form-field">
+                        <span>Aluguel <b>*</b></span>
+                        <input type="text" data-field="aluguel" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
+                    </label>
+                    <label class="form-field">
+                        <span>Número de energia</span>
+                        <input type="text" data-field="numero_energia">
+                    </label>
+                    <label class="form-field">
+                        <span>Número de água</span>
+                        <input type="text" data-field="numero_agua">
+                    </label>
+                    <label class="form-field">
+                        <span>Administração da propriedade</span>
+                        <select data-field="adm_propriedade">
+                            <option value="0">Não</option>
+                            <option value="1">Sim</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Energia solar</span>
+                        <select data-field="energia_solar">
+                            <option value="0">Não</option>
+                            <option value="1">Sim</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Unidade geradora</span>
+                        <input type="text" data-field="unidade_geradora" placeholder="Nome ou código">
+                    </label>
+                    <label class="form-field">
+                        <span>Percentual de energia</span>
+                        <input type="number" data-field="percentual_energia" min="0" max="100" step="0.01" placeholder="0,00">
+                    </label>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button class="secondary-button" id="modal-cancel" type="button">Cancelar</button>
+                <button class="primary-button" id="modal-submit" type="submit">Salvar cadastro</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+{% endblock %}
