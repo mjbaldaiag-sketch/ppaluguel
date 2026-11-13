@@ -82,7 +82,6 @@
                         <strong id="count-proprietarios">0</strong>
                         <small>pessoas cadastradas</small>
                     </div>
-                    <span class="card-decoration" aria-hidden="true">↗</span>
                 </article>
                 <article class="summary-card summary-card-purple">
                     <div class="card-icon" aria-hidden="true">◉</div>
@@ -91,16 +90,20 @@
                         <strong id="count-inquilinos">0</strong>
                         <small>pessoas cadastradas</small>
                     </div>
-                    <span class="card-decoration" aria-hidden="true">↗</span>
                 </article>
                 <article class="summary-card summary-card-green">
                     <div class="card-icon" aria-hidden="true">▦</div>
-                    <div class="card-data">
-                        <span>Imóveis</span>
-                        <strong id="count-imoveis">0</strong>
-                        <small>unidades cadastradas</small>
+                    <div class="card-data property-card-data">
+                        <span class="property-card-title">Imóveis</span>
+                        <div class="property-count-row">
+                            <span>TOTAL LOCAÇÃO</span>
+                            <strong id="count-imoveis-locacao">0</strong>
+                        </div>
+                        <div class="property-count-row">
+                            <span>TOTAL ENERGIA SOLAR</span>
+                            <strong id="count-imoveis-energia-solar">0</strong>
+                        </div>
                     </div>
-                    <span class="card-decoration" aria-hidden="true">↗</span>
                 </article>
                 <article class="summary-card summary-card-amber">
                     <div class="card-icon" aria-hidden="true">C</div>
@@ -109,7 +112,6 @@
                         <strong id="count-contratos">0</strong>
                         <small>aluguéis cadastrados</small>
                     </div>
-                    <span class="card-decoration" aria-hidden="true">↗</span>
                 </article>
             </section>
 
@@ -121,12 +123,18 @@
                         <p id="module-description">Gerencie as pessoas responsáveis pelos seus imóveis.</p>
                     </div>
                     <div class="module-meta">
+                        <label class="owner-filter" for="owner-filter">
+                            <span>Proprietário</span>
+                            <select id="owner-filter" aria-label="Filtrar por proprietário">
+                                <option value="">TODOS</option>
+                            </select>
+                        </label>
                         <span class="record-count" id="record-count">0 registros</span>
                         <button class="secondary-button" id="refresh-button" type="button" aria-label="Atualizar listagem">↻ <span>Atualizar</span></button>
                     </div>
                 </div>
 
-                <div class="table-card">
+                <div class="table-card" id="records-table-card">
                     <div class="table-scroll">
                         <table class="records-table">
                             <thead id="records-head"></thead>
@@ -142,6 +150,55 @@
                     <div class="loading-state" id="loading-state" hidden>
                         <div class="spinner" aria-hidden="true"></div>
                         <span>Carregando registros...</span>
+                    </div>
+                </div>
+
+                <div class="contracts-tables" id="contracts-tables" hidden>
+                    <section class="contract-table-section">
+                        <div class="contract-table-heading">
+                            <h3>Contratos Ativos</h3>
+                            <span class="record-count" id="active-contract-count">0 registros</span>
+                        </div>
+                        <div class="table-card">
+                            <div class="table-scroll">
+                                <table class="records-table">
+                                    <thead id="active-contracts-head"></thead>
+                                    <tbody id="active-contracts-body"></tbody>
+                                </table>
+                            </div>
+                            <div class="empty-state" id="active-contracts-empty" hidden>
+                                <div class="empty-icon" aria-hidden="true">⌁</div>
+                                <h3 id="active-contracts-empty-title">Nenhum contrato ativo</h3>
+                                <p id="active-contracts-empty-description">Cadastre um contrato ativo para começar.</p>
+                                <button class="secondary-button contract-empty-action" data-module="contratos" type="button">Adicionar contrato</button>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="contract-table-section">
+                        <div class="contract-table-heading">
+                            <h3>Contratos Encerrados</h3>
+                            <span class="record-count" id="closed-contract-count">0 registros</span>
+                        </div>
+                        <div class="table-card">
+                            <div class="table-scroll">
+                                <table class="records-table">
+                                    <thead id="closed-contracts-head"></thead>
+                                    <tbody id="closed-contracts-body"></tbody>
+                                </table>
+                            </div>
+                            <div class="empty-state" id="closed-contracts-empty" hidden>
+                                <div class="empty-icon" aria-hidden="true">⌁</div>
+                                <h3 id="closed-contracts-empty-title">Nenhum contrato encerrado</h3>
+                                <p id="closed-contracts-empty-description">Contratos encerrados aparecerão nesta tabela.</p>
+                                <button class="secondary-button contract-empty-action" data-module="contratos" type="button">Adicionar contrato</button>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="loading-state" id="contracts-loading-state" hidden>
+                        <div class="spinner" aria-hidden="true"></div>
+                        <span>Carregando contratos...</span>
                     </div>
                 </div>
             </section>
@@ -341,10 +398,11 @@
                         </select>
                     </label>
                     <label class="form-field">
-                        <span>Energia solar</span>
-                        <select data-field="energia_solar">
-                            <option value="0">Não</option>
-                            <option value="1">Sim</option>
+                        <span>Tipo operação <b>*</b></span>
+                        <select data-field="tipo_operacao" aria-required="true">
+                            <option value="ALUGUEL">ALUGUEL</option>
+                            <option value="ENERGIA SOLAR">ENERGIA SOLAR</option>
+                            <option value="ALUGUEL + ENERGIA SOLAR">ALUGUEL + ENERGIA SOLAR</option>
                         </select>
                     </label>
                     <label class="form-field">
@@ -391,6 +449,13 @@
                     <label class="form-field">
                         <span>Valor da caução</span>
                         <input type="text" data-field="valor_caucao" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
+                    </label>
+                    <label class="form-field">
+                        <span>Status <b>*</b></span>
+                        <select data-field="status" aria-required="true">
+                            <option value="ATIVO">Ativo</option>
+                            <option value="ENCERRADO">Encerrado</option>
+                        </select>
                     </label>
                 </div>
             </div>

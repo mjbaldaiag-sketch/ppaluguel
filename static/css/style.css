@@ -333,7 +333,7 @@ h3 {
     gap: 8px;
     min-height: 42px;
     padding: 0 18px;
-    border-radius: 11px;
+    border-radius: 15px;
     font-size: 12px;
     font-weight: 750;
     transition: .2s ease;
@@ -370,7 +370,8 @@ h3 {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 18px;
-    margin-top: 43px;
+    width: min(100%, 1120px);
+    margin: 43px auto 0;
 }
 
 .summary-card {
@@ -381,7 +382,7 @@ h3 {
     min-height: 131px;
     overflow: hidden;
     padding: 21px 22px;
-    border-radius: var(--radius-lg);
+    border-radius: 29px;
     box-shadow: var(--shadow);
 }
 
@@ -459,25 +460,43 @@ h3 {
     font-size: 10px;
 }
 
-.card-decoration {
-    position: absolute;
-    right: 21px;
-    bottom: 16px;
-    color: rgba(85, 106, 190, .18);
-    font-size: 37px;
-    font-weight: 200;
+.property-card-data {
+    flex: 1;
+    min-width: 0;
 }
 
-.summary-card-purple .card-decoration {
-    color: rgba(145, 104, 202, .16);
+.property-card-data > .property-card-title {
+    display: block;
+    margin: 0 0 10px;
+    color: #77859a;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: normal;
+    line-height: 1.4;
 }
 
-.summary-card-green .card-decoration {
-    color: rgba(42, 163, 119, .16);
+.property-count-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
 }
 
-.summary-card-amber .card-decoration {
-    color: rgba(210, 148, 63, .18);
+.property-count-row + .property-count-row {
+    margin-top: 8px;
+}
+
+.property-count-row > span {
+    color: #77859a;
+    font-size: 9px;
+    font-weight: 650;
+    line-height: 1.1;
+}
+
+.property-count-row > strong {
+    flex: 0 0 auto;
+    margin-top: 0;
+    font-size: 21px;
 }
 
 .module-section {
@@ -494,6 +513,31 @@ h3 {
     gap: 15px;
 }
 
+.owner-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.owner-filter > span {
+    color: #9ca7b7;
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+
+.owner-filter select {
+    min-height: 36px;
+    max-width: 220px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fbfcfe;
+    color: #3d4a60;
+    font-size: 11px;
+}
+
 .record-count {
     color: #9ca7b7;
     font-size: 11px;
@@ -508,6 +552,26 @@ h3 {
     border-radius: var(--radius-lg);
     background: var(--surface);
     box-shadow: var(--shadow);
+}
+
+.contract-table-section + .contract-table-section {
+    margin-top: 30px;
+}
+
+.contract-table-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.contract-table-heading h3 {
+    color: #38465d;
+    font-size: 15px;
+}
+
+.contracts-loading-state {
+    margin-top: 21px;
 }
 
 .table-scroll {
@@ -1022,6 +1086,7 @@ h3 {
 @media (max-width: 1080px) {
     .summary-grid {
         grid-template-columns: repeat(2, 1fr);
+        max-width: 700px;
         gap: 12px;
     }
 
@@ -1120,6 +1185,7 @@ h3 {
 
     .summary-grid {
         grid-template-columns: 1fr;
+        max-width: none;
         margin-top: 30px;
     }
 
@@ -1134,6 +1200,17 @@ h3 {
     .module-meta {
         justify-content: space-between;
         width: 100%;
+        flex-wrap: wrap;
+        row-gap: 8px;
+    }
+
+    .owner-filter {
+        flex: 1 1 100%;
+    }
+
+    .owner-filter select {
+        flex: 1;
+        max-width: none;
     }
 
     .module-meta .secondary-button {

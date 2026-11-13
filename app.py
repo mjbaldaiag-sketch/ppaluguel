@@ -57,6 +57,15 @@ TIPOS_IMOVEL = (
     "CHÁCARA/SÍTIO",
     "TERRENO",
 )
+TIPOS_OPERACAO = (
+    "ALUGUEL",
+    "ENERGIA SOLAR",
+    "ALUGUEL + ENERGIA SOLAR",
+)
+CONTRACT_STATUSES = (
+    "ATIVO",
+    "ENCERRADO",
+)
 
 PERSON_FIELDS = (
     "nome_completo",
@@ -94,7 +103,7 @@ PROPERTY_FIELDS = (
     "numero_energia",
     "numero_agua",
     "adm_propriedade",
-    "energia_solar",
+    "tipo_operacao",
     "unidade_geradora",
     "percentual_energia",
 )
@@ -192,7 +201,9 @@ def init_db() -> None:
             numero_agua TEXT,
             adm_propriedade INTEGER NOT NULL DEFAULT 0 CHECK (adm_propriedade IN (0, 1)),
             imobiliaria INTEGER NOT NULL DEFAULT 0 CHECK (imobiliaria IN (0, 1)),
-            energia_solar INTEGER NOT NULL DEFAULT 0 CHECK (energia_solar IN (0, 1)),
+            tipo_operacao TEXT NOT NULL DEFAULT 'ALUGUEL' CHECK (
+                tipo_operacao IN ('ALUGUEL', 'ENERGIA SOLAR', 'ALUGUEL + ENERGIA SOLAR')
+            ),
             unidade_geradora TEXT,
             percentual_energia REAL CHECK (
                 percentual_energia IS NULL OR
@@ -228,6 +239,24 @@ def migrate_database(db: sqlite3.Connection) -> None:
             "ALTER TABLE imoveis ADD COLUMN imobiliaria INTEGER NOT NULL DEFAULT 0 "
             "CHECK (imobiliaria IN (0, 1))"
         )
+    if "tipo_operacao" not in columns:
+        db.execute("ALTER TABLE imoveis ADD COLUMN tipo_operacao TEXT")
+
+    if "energia_solar" in columns:
+        db.execute(
+            """
+            UPDATE imoveis
+            SET tipo_operacao = CASE
+                WHEN energia_solar = 1 THEN 'ENERGIA SOLAR'
+                ELSE 'ALUGUEL'
+            END
+            WHERE tipo_operacao IS NULL
+            """
+        )
+    else:
+        db.execute(
+            "UPDATE imoveis SET tipo_operacao = 'ALUGUEL' WHERE tipo_operacao IS NULL"
+        )
 
     db.execute(
         """
@@ -239,12 +268,35 @@ def migrate_database(db: sqlite3.Connection) -> None:
             data_fim TEXT NOT NULL,
             valor_aluguel REAL NOT NULL CHECK (valor_aluguel >= 0),
             valor_caucao REAL CHECK (valor_caucao IS NULL OR valor_caucao >= 0),
+            status TEXT NOT NULL DEFAULT 'ATIVO' CHECK (
+                status IN ('ATIVO', 'ENCERRADO')
+            ),
             FOREIGN KEY (imovel_id) REFERENCES imoveis (id) ON DELETE RESTRICT,
             FOREIGN KEY (inquilino_id) REFERENCES inquilinos_clientes (id) ON DELETE RESTRICT,
             CHECK (data_fim >= data_inicio)
         )
         """
     )
+
+    contract_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(contratos)").fetchall()
+    }
+    if "status" not in contract_columns:
+        db.execute(
+            "ALTER TABLE contratos ADD COLUMN status TEXT NOT NULL DEFAULT 'ATIVO' "
+            "CHECK (status IN ('ATIVO', 'ENCERRADO'))"
+        )
+    else:
+        db.execute(
+            """
+            UPDATE contratos
+            SET status = CASE
+                WHEN UPPER(TRIM(COALESCE(status, ''))) = 'ENCERRADO'
+                THEN 'ENCERRADO'
+                ELSE 'ATIVO'
+            END
+            """
+        )
 
 
 def normalize_existing_data(db: sqlite3.Connection) -> None:
@@ -266,6 +318,7 @@ def normalize_existing_data(db: sqlite3.Connection) -> None:
             "inscricao_mun",
             "numero_energia",
             "numero_agua",
+            "tipo_operacao",
             "unidade_geradora",
         ),
     }
@@ -442,6 +495,12 @@ def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
     if property_type not in TIPOS_IMOVEL:
         raise ValueError("Tipo de imóvel inválido.")
 
+    operation_type = clean_text(data.get("tipo_operacao"))
+    if not operation_type:
+        raise ValueError("Tipo de operação é obrigatório.")
+    if operation_type not in TIPOS_OPERACAO:
+        raise ValueError("Tipo de operação inválido.")
+
     nickname = clean_text(data.get("apelido"))
     if not nickname:
         raise ValueError("Apelido é obrigatório.")
@@ -484,7 +543,7 @@ def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
         clean_text(data.get("numero_agua")),
         parse_boolean(data.get("adm_propriedade"), "Administração da propriedade"),
         parse_boolean(data.get("imobiliaria"), "Administração por imobiliária"),
-        parse_boolean(data.get("energia_solar"), "Energia solar"),
+        operation_type,
         clean_text(data.get("unidade_geradora")),
         energy_percentage,
     )
@@ -509,6 +568,15 @@ def parse_foreign_key(
     return record_id
 
 
+def optional_owner_filter(db: sqlite3.Connection) -> int | None:
+    """Parse the shared owner filter, keeping an absent/empty value global."""
+
+    value = request.args.get("proprietario_id")
+    if value is None or not str(value).strip():
+        return None
+    return parse_foreign_key(value, "proprietário", "proprietario", db)
+
+
 def parse_contract_date(value: Any, label: str) -> date:
     if value is None or (isinstance(value, str) and not value.strip()):
         raise ValueError(f"{label} é obrigatória.")
@@ -523,7 +591,24 @@ def parse_contract_date(value: Any, label: str) -> date:
     return parsed
 
 
-def contract_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, ...]:
+def parse_contract_status(value: Any, default: str | None = None) -> str:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if default is not None:
+            return default
+        raise ValueError("Status é obrigatório.")
+
+    status = clean_text(value)
+    if status not in CONTRACT_STATUSES:
+        raise ValueError("Status inválido. Use Ativo ou Encerrado.")
+    return status
+
+
+def contract_values(
+    data: dict[str, Any],
+    db: sqlite3.Connection,
+    *,
+    status_default: str | None = None,
+) -> tuple[Any, ...]:
     property_id = parse_foreign_key(data.get("imovel_id"), "imóvel", "imoveis", db)
     tenant_id = parse_foreign_key(
         data.get("inquilino_id"),
@@ -543,6 +628,7 @@ def contract_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
         end_date.isoformat(),
         parse_decimal(data.get("valor_aluguel"), "Valor do aluguel", required=True),
         parse_decimal(data.get("valor_caucao"), "Valor da caução"),
+        parse_contract_status(data.get("status"), status_default),
     )
 
 
@@ -553,7 +639,12 @@ def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 def get_property(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
     return db.execute(
         """
-        SELECT i.*, p.nome_completo AS responsavel_nome
+        SELECT i.id, i.apelido, i.tipo_imovel, i.responsavel, i.cep, i.endereco,
+               i.estado, i.cidade, i.bairro, i.numero, i.complemento,
+               i.inscricao_mun, i.aluguel, i.numero_energia, i.numero_agua,
+               i.adm_propriedade, i.imobiliaria, i.tipo_operacao,
+               i.unidade_geradora, i.percentual_energia,
+               p.nome_completo AS responsavel_nome
         FROM imoveis AS i
         JOIN proprietario AS p ON p.id = i.responsavel
         WHERE i.id = ?
@@ -584,11 +675,47 @@ def register_routes(app: Flask) -> None:
     @app.get("/api/dashboard")
     def dashboard_data():
         db = get_db()
+        try:
+            owner_id = optional_owner_filter(db)
+        except ValueError as error:
+            return error_response(str(error))
+
+        property_where = "WHERE responsavel = ?" if owner_id is not None else ""
+        property_params = (owner_id,) if owner_id is not None else ()
+        property_counts = db.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE
+                    WHEN UPPER(COALESCE(tipo_operacao, '')) LIKE '%ALUGUEL%'
+                    THEN 1 ELSE 0
+                END), 0) AS imoveis_locacao,
+                COALESCE(SUM(CASE
+                    WHEN UPPER(COALESCE(tipo_operacao, '')) LIKE '%ENERGIA SOLAR%'
+                    THEN 1 ELSE 0
+                END), 0) AS imoveis_energia_solar
+            FROM imoveis
+            {property_where}
+            """,
+            property_params,
+        ).fetchone()
+        contract_where = "WHERE i.responsavel = ?" if owner_id is not None else ""
+        contract_params = (owner_id,) if owner_id is not None else ()
         counts = {
             "proprietarios": db.execute("SELECT COUNT(*) FROM proprietario").fetchone()[0],
             "inquilinos_clientes": db.execute("SELECT COUNT(*) FROM inquilinos_clientes").fetchone()[0],
-            "imoveis": db.execute("SELECT COUNT(*) FROM imoveis").fetchone()[0],
-            "contratos": db.execute("SELECT COUNT(*) FROM contratos").fetchone()[0],
+            "imoveis": property_counts["total"],
+            "imoveis_locacao": property_counts["imoveis_locacao"],
+            "imoveis_energia_solar": property_counts["imoveis_energia_solar"],
+            "contratos": db.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM contratos AS c
+                JOIN imoveis AS i ON i.id = c.imovel_id
+                {contract_where}
+                """,
+                contract_params,
+            ).fetchone()[0],
         }
         return jsonify({"counts": counts})
 
@@ -742,13 +869,26 @@ def register_routes(app: Flask) -> None:
     def properties_collection():
         db = get_db()
         if request.method == "GET":
+            try:
+                owner_id = optional_owner_filter(db)
+            except ValueError as error:
+                return error_response(str(error))
+            where_clause = "WHERE i.responsavel = ?" if owner_id is not None else ""
+            query_params = (owner_id,) if owner_id is not None else ()
             rows = db.execute(
-                """
-                SELECT i.*, p.nome_completo AS responsavel_nome
+                f"""
+                SELECT i.id, i.apelido, i.tipo_imovel, i.responsavel, i.cep, i.endereco,
+                       i.estado, i.cidade, i.bairro, i.numero, i.complemento,
+                       i.inscricao_mun, i.aluguel, i.numero_energia, i.numero_agua,
+                       i.adm_propriedade, i.imobiliaria, i.tipo_operacao,
+                       i.unidade_geradora, i.percentual_energia,
+                       p.nome_completo AS responsavel_nome
                 FROM imoveis AS i
                 JOIN proprietario AS p ON p.id = i.responsavel
+                {where_clause}
                 ORDER BY i.apelido COLLATE NOCASE
-                """
+                """,
+                query_params,
             ).fetchall()
             return jsonify([row_dict(row) for row in rows])
 
@@ -765,7 +905,7 @@ def register_routes(app: Flask) -> None:
             INSERT INTO imoveis
                 (tipo_imovel, apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
                  complemento, inscricao_mun, aluguel, numero_energia, numero_agua,
-                 adm_propriedade, imobiliaria, energia_solar, unidade_geradora, percentual_energia)
+                 adm_propriedade, imobiliaria, tipo_operacao, unidade_geradora, percentual_energia)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
@@ -796,7 +936,7 @@ def register_routes(app: Flask) -> None:
                 SET tipo_imovel = ?, apelido = ?, responsavel = ?, cep = ?, endereco = ?, estado = ?,
                     cidade = ?, bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
                     aluguel = ?, numero_energia = ?, numero_agua = ?,
-                    adm_propriedade = ?, imobiliaria = ?, energia_solar = ?, unidade_geradora = ?,
+                    adm_propriedade = ?, imobiliaria = ?, tipo_operacao = ?, unidade_geradora = ?,
                     percentual_energia = ?
                 WHERE id = ?
                 """,
@@ -822,15 +962,23 @@ def register_routes(app: Flask) -> None:
     def contracts_collection():
         db = get_db()
         if request.method == "GET":
+            try:
+                owner_id = optional_owner_filter(db)
+            except ValueError as error:
+                return error_response(str(error))
+            where_clause = "WHERE i.responsavel = ?" if owner_id is not None else ""
+            query_params = (owner_id,) if owner_id is not None else ()
             rows = db.execute(
-                """
+                f"""
                 SELECT c.*, i.apelido AS imovel_nome,
                        ic.nome_completo AS inquilino_nome
                 FROM contratos AS c
                 JOIN imoveis AS i ON i.id = c.imovel_id
                 JOIN inquilinos_clientes AS ic ON ic.id = c.inquilino_id
+                {where_clause}
                 ORDER BY c.data_inicio DESC, c.id DESC
-                """
+                """,
+                query_params,
             ).fetchall()
             return jsonify([row_dict(row) for row in rows])
 
@@ -838,7 +986,7 @@ def register_routes(app: Flask) -> None:
         if data is None:
             return error_response("Envie um objeto JSON válido.")
         try:
-            values = contract_values(data, db)
+            values = contract_values(data, db, status_default="ATIVO")
         except ValueError as error:
             return error_response(str(error))
 
@@ -846,8 +994,8 @@ def register_routes(app: Flask) -> None:
             """
             INSERT INTO contratos
                 (imovel_id, inquilino_id, data_inicio, data_fim,
-                 valor_aluguel, valor_caucao)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 valor_aluguel, valor_caucao, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -868,14 +1016,14 @@ def register_routes(app: Flask) -> None:
             if data is None:
                 return error_response("Envie um objeto JSON válido.")
             try:
-                values = contract_values(data, db)
+                values = contract_values(data, db, status_default=row["status"] or "ATIVO")
             except ValueError as error:
                 return error_response(str(error))
             db.execute(
                 """
                 UPDATE contratos
                 SET imovel_id = ?, inquilino_id = ?, data_inicio = ?, data_fim = ?,
-                    valor_aluguel = ?, valor_caucao = ?
+                    valor_aluguel = ?, valor_caucao = ?, status = ?
                 WHERE id = ?
                 """,
                 (*values, record_id),

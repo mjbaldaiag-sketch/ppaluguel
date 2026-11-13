@@ -65,7 +65,7 @@ class AppCrudTestCase(unittest.TestCase):
             "numero_agua": "5432",
             "adm_propriedade": "1",
             "imobiliaria": "1",
-            "energia_solar": "0",
+            "tipo_operacao": "ALUGUEL",
             "unidade_geradora": "UG-01",
             "percentual_energia": "35,5",
         }
@@ -89,8 +89,22 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(dashboard.status_code, 200)
         self.assertEqual(
             dashboard.get_json()["counts"],
-            {"proprietarios": 0, "inquilinos_clientes": 0, "imoveis": 0, "contratos": 0},
+            {
+                "proprietarios": 0,
+                "inquilinos_clientes": 0,
+                "imoveis": 0,
+                "imoveis_locacao": 0,
+                "imoveis_energia_solar": 0,
+                "contratos": 0,
+            },
         )
+        connection = sqlite3.connect(Path(self.temp_dir.name) / "test.db")
+        property_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(imoveis)").fetchall()
+        }
+        connection.close()
+        self.assertIn("tipo_operacao", property_columns)
+        self.assertNotIn("energia_solar", property_columns)
 
     def test_proprietario_crud_and_normalization(self):
         created = self.post_json("/api/proprietarios", self.person_payload())
@@ -173,6 +187,8 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(property_data["tipo_imovel"], "APARTAMENTO")
         self.assertEqual(property_data["aluguel"], 2500.0)
         self.assertEqual(property_data["imobiliaria"], 1)
+        self.assertEqual(property_data["tipo_operacao"], "ALUGUEL")
+        self.assertNotIn("energia_solar", property_data)
         self.assertEqual(property_data["percentual_energia"], 35.5)
         self.assertEqual(property_data["endereco"], "PRAÇA DA SÉ")
         self.assertEqual(property_data["responsavel_nome"], "PROPRIETÁRIO DO IMÓVEL")
@@ -183,9 +199,11 @@ class AppCrudTestCase(unittest.TestCase):
         changed = self.property_payload(owner["id"])
         changed["apelido"] = "Casa Atualizada"
         changed["tipo_imovel"] = "CASA"
+        changed["tipo_operacao"] = "ALUGUEL + ENERGIA SOLAR"
         updated = self.put_json(f"/api/imoveis/{property_data['id']}", changed)
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.get_json()["tipo_imovel"], "CASA")
+        self.assertEqual(updated.get_json()["tipo_operacao"], "ALUGUEL + ENERGIA SOLAR")
         self.assertEqual(
             self.client.delete(f"/api/imoveis/{property_data['id']}").status_code,
             204,
@@ -217,6 +235,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(contract["data_inicio"], "2026-01-01")
         self.assertEqual(contract["valor_aluguel"], 2500.0)
         self.assertEqual(contract["valor_caucao"], 5000.0)
+        self.assertEqual(contract["status"], "ATIVO")
         self.assertEqual(contract["imovel_nome"], "APARTAMENTO CENTRO")
         self.assertEqual(contract["inquilino_nome"], "INQUILINO DO CONTRATO")
 
@@ -242,6 +261,74 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/api/contratos/{contract_id}").status_code, 204)
         self.assertEqual(self.client.delete(f"/api/imoveis/{property_data['id']}").status_code, 204)
         self.assertEqual(self.client.delete(f"/api/inquilinos-clientes/{tenant['id']}").status_code, 204)
+
+    def test_contract_status_default_update_and_reactivation(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Status")
+        ).get_json()
+        property_data = self.post_json(
+            "/api/imoveis", self.property_payload(owner["id"])
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Status")
+        ).get_json()
+        payload = self.contract_payload(property_data["id"], tenant["id"])
+
+        created = self.post_json("/api/contratos", payload)
+        self.assertEqual(created.status_code, 201)
+        contract = created.get_json()
+        self.assertEqual(contract["status"], "ATIVO")
+
+        connection = sqlite3.connect(Path(self.temp_dir.name) / "test.db")
+        persisted_status = connection.execute(
+            "SELECT status FROM contratos WHERE id = ?", (contract["id"],)
+        ).fetchone()
+        connection.close()
+        self.assertEqual(persisted_status, ("ATIVO",))
+
+        closed_payload = dict(payload, status="Encerrado", data_fim="2028-01-01")
+        closed = self.put_json(f"/api/contratos/{contract['id']}", closed_payload)
+        self.assertEqual(closed.status_code, 200)
+        self.assertEqual(closed.get_json()["status"], "ENCERRADO")
+
+        legacy_update = dict(payload, data_fim="2029-01-01")
+        preserved = self.put_json(f"/api/contratos/{contract['id']}", legacy_update)
+        self.assertEqual(preserved.status_code, 200)
+        self.assertEqual(preserved.get_json()["status"], "ENCERRADO")
+
+        listed = self.client.get("/api/contratos").get_json()
+        self.assertEqual(
+            [record["id"] for record in listed if record["status"] == "ATIVO"],
+            [],
+        )
+        self.assertEqual(
+            [record["id"] for record in listed if record["status"] == "ENCERRADO"],
+            [contract["id"]],
+        )
+
+        reactivated = self.put_json(
+            f"/api/contratos/{contract['id']}",
+            dict(payload, status="Ativo"),
+        )
+        self.assertEqual(reactivated.status_code, 200)
+        self.assertEqual(reactivated.get_json()["status"], "ATIVO")
+
+        listed = self.client.get("/api/contratos").get_json()
+        self.assertEqual(
+            [record["id"] for record in listed if record["status"] == "ATIVO"],
+            [contract["id"]],
+        )
+        self.assertEqual(
+            [record["id"] for record in listed if record["status"] == "ENCERRADO"],
+            [],
+        )
+
+        invalid = self.post_json("/api/contratos", dict(payload, status="PAUSADO"))
+        self.assertEqual(invalid.status_code, 400)
+        invalid_update = self.put_json(
+            f"/api/contratos/{contract['id']}", dict(payload, status="PAUSADO")
+        )
+        self.assertEqual(invalid_update.status_code, 400)
 
     def test_contract_validation_errors(self):
         owner = self.post_json(
@@ -276,6 +363,17 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('data-module="contratos"', page)
         self.assertIn('data-form-section="contratos"', page)
         self.assertIn('data-field="tipo_imovel"', page)
+        self.assertIn('data-field="tipo_operacao"', page)
+        self.assertIn('value="ALUGUEL"', page)
+        self.assertIn('value="ENERGIA SOLAR"', page)
+        self.assertIn('value="ALUGUEL + ENERGIA SOLAR"', page)
+        self.assertNotIn('data-field="energia_solar"', page)
+        self.assertIn('id="count-imoveis-locacao"', page)
+        self.assertIn('id="count-imoveis-energia-solar"', page)
+        self.assertNotIn('id="count-imoveis"', page)
+        self.assertIn('class="property-card-title">Imóveis</span>', page)
+        self.assertIn(">TOTAL LOCAÇÃO</span>", page)
+        self.assertIn(">TOTAL ENERGIA SOLAR</span>", page)
         self.assertIn("GALPÃO COMERCIAL", page)
         self.assertIn("CHÁCARA/SÍTIO", page)
         self.assertEqual(page.count('data-field="rg"'), 2)
@@ -284,9 +382,18 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('data-field="rg" inputmode="text" placeholder="Ex.: SSP4494416117"', page)
         self.assertIn('data-field="imovel_id"', page)
         self.assertIn('data-field="inquilino_id"', page)
+        self.assertIn('data-field="status"', page)
+        self.assertIn('value="ATIVO">Ativo</option>', page)
+        self.assertIn('value="ENCERRADO">Encerrado</option>', page)
+        self.assertIn('id="active-contracts-head"', page)
+        self.assertIn('id="closed-contracts-head"', page)
+        self.assertIn("Contratos Ativos", page)
+        self.assertIn("Contratos Encerrados", page)
         self.assertIn('id="clear-cep-button"', page)
         self.assertIn(">Limpar CEP</button>", page)
         self.assertIn('id="count-contratos"', page)
+        self.assertIn('id="owner-filter"', page)
+        self.assertIn('<option value="">TODOS</option>', page)
         proprietario_section = page.split('data-form-section="proprietarios"', 1)[1].split(
             'data-form-section="inquilinos"', 1
         )[0]
@@ -295,6 +402,95 @@ class AppCrudTestCase(unittest.TestCase):
         )[0]
         self.assertNotIn('data-field="nome_contato"', proprietario_section)
         self.assertIn('data-field="nome_contato"', inquilino_section)
+
+    def test_global_owner_filter_applies_to_properties_contracts_and_dashboard(self):
+        owner_one = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário Um")
+        ).get_json()
+        owner_two = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário Dois")
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Compartilhado")
+        ).get_json()
+
+        property_one = self.property_payload(owner_one["id"])
+        property_one.update({"apelido": "Imóvel Um", "tipo_operacao": "ALUGUEL"})
+        property_one = self.post_json("/api/imoveis", property_one).get_json()
+
+        property_two = self.property_payload(owner_one["id"])
+        property_two.update(
+            {"apelido": "Imóvel Dois", "tipo_operacao": "ALUGUEL + ENERGIA SOLAR"}
+        )
+        property_two = self.post_json("/api/imoveis", property_two).get_json()
+
+        property_three = self.property_payload(owner_two["id"])
+        property_three.update(
+            {"apelido": "Imóvel Três", "tipo_operacao": "ENERGIA SOLAR"}
+        )
+        property_three = self.post_json("/api/imoveis", property_three).get_json()
+
+        contract_one = self.post_json(
+            "/api/contratos", self.contract_payload(property_one["id"], tenant["id"])
+        ).get_json()
+        contract_two = self.post_json(
+            "/api/contratos", self.contract_payload(property_three["id"], tenant["id"])
+        ).get_json()
+
+        all_properties = self.client.get("/api/imoveis").get_json()
+        self.assertEqual({record["id"] for record in all_properties}, {
+            property_one["id"], property_two["id"], property_three["id"]
+        })
+        owner_one_properties = self.client.get(
+            f"/api/imoveis?proprietario_id={owner_one['id']}"
+        ).get_json()
+        owner_two_properties = self.client.get(
+            f"/api/imoveis?proprietario_id={owner_two['id']}"
+        ).get_json()
+        self.assertEqual(
+            {record["id"] for record in owner_one_properties},
+            {property_one["id"], property_two["id"]},
+        )
+        self.assertEqual(
+            {record["id"] for record in owner_two_properties}, {property_three["id"]}
+        )
+        self.assertEqual(
+            {record["id"] for record in self.client.get("/api/imoveis?proprietario_id=").get_json()},
+            {property_one["id"], property_two["id"], property_three["id"]},
+        )
+
+        all_contracts = self.client.get("/api/contratos").get_json()
+        self.assertEqual({record["id"] for record in all_contracts}, {contract_one["id"], contract_two["id"]})
+        owner_one_contracts = self.client.get(
+            f"/api/contratos?proprietario_id={owner_one['id']}"
+        ).get_json()
+        owner_two_contracts = self.client.get(
+            f"/api/contratos?proprietario_id={owner_two['id']}"
+        ).get_json()
+        self.assertEqual({record["id"] for record in owner_one_contracts}, {contract_one["id"]})
+        self.assertEqual({record["id"] for record in owner_two_contracts}, {contract_two["id"]})
+
+        all_counts = self.client.get("/api/dashboard").get_json()["counts"]
+        owner_one_counts = self.client.get(
+            f"/api/dashboard?proprietario_id={owner_one['id']}"
+        ).get_json()["counts"]
+        self.assertEqual(
+            (all_counts["imoveis"], all_counts["imoveis_locacao"],
+             all_counts["imoveis_energia_solar"], all_counts["contratos"]),
+            (3, 2, 2, 2),
+        )
+        self.assertEqual(
+            (owner_one_counts["imoveis"], owner_one_counts["imoveis_locacao"],
+             owner_one_counts["imoveis_energia_solar"], owner_one_counts["contratos"]),
+            (2, 2, 1, 1),
+        )
+        self.assertEqual(owner_one_counts["proprietarios"], all_counts["proprietarios"])
+        self.assertEqual(owner_one_counts["inquilinos_clientes"], all_counts["inquilinos_clientes"])
+
+    def test_global_owner_filter_rejects_invalid_owner_ids(self):
+        for endpoint in ("/api/imoveis", "/api/contratos", "/api/dashboard"):
+            self.assertEqual(self.client.get(f"{endpoint}?proprietario_id=abc").status_code, 400)
+            self.assertEqual(self.client.get(f"{endpoint}?proprietario_id=999").status_code, 400)
 
     def test_frontend_text_has_no_mojibake_markers(self):
         app_js = Path(__file__).resolve().parents[1] / "static" / "js" / "app.js"
@@ -350,6 +546,14 @@ class AppCrudTestCase(unittest.TestCase):
         invalid_property_type["tipo_imovel"] = "LOFT"
         self.assertEqual(self.post_json("/api/imoveis", invalid_property_type).status_code, 400)
 
+        missing_operation = self.property_payload(owner["id"])
+        missing_operation.pop("tipo_operacao")
+        self.assertEqual(self.post_json("/api/imoveis", missing_operation).status_code, 400)
+
+        invalid_operation = self.property_payload(owner["id"])
+        invalid_operation["tipo_operacao"] = "VENDA"
+        self.assertEqual(self.post_json("/api/imoveis", invalid_operation).status_code, 400)
+
     def test_property_types_are_persisted(self):
         owner = self.post_json(
             "/api/proprietarios", self.person_payload("Tipos de Imóveis")
@@ -374,6 +578,55 @@ class AppCrudTestCase(unittest.TestCase):
             {record["tipo_imovel"] for record in records},
             set(expected_types),
         )
+
+    def test_operation_types_are_persisted(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Tipos de Operação")
+        ).get_json()
+        expected_operations = [
+            "ALUGUEL",
+            "ENERGIA SOLAR",
+            "ALUGUEL + ENERGIA SOLAR",
+        ]
+
+        for index, operation_type in enumerate(expected_operations, start=1):
+            payload = self.property_payload(owner["id"])
+            payload.update(
+                {"tipo_operacao": operation_type, "apelido": f"Operação {index}"}
+            )
+            response = self.post_json("/api/imoveis", payload)
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.get_json()["tipo_operacao"], operation_type)
+
+        records = self.client.get("/api/imoveis").get_json()
+        self.assertEqual(
+            {record["tipo_operacao"] for record in records},
+            set(expected_operations),
+        )
+        self.assertTrue(all("energia_solar" not in record for record in records))
+
+    def test_dashboard_counts_property_operations_with_overlap(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Contagem de Imóveis")
+        ).get_json()
+        operations = [
+            "ALUGUEL",
+            "ENERGIA SOLAR",
+            "ALUGUEL + ENERGIA SOLAR",
+            "ALUGUEL + ENERGIA SOLAR",
+        ]
+
+        for index, operation_type in enumerate(operations, start=1):
+            payload = self.property_payload(owner["id"])
+            payload.update(
+                {"tipo_operacao": operation_type, "apelido": f"Contagem {index}"}
+            )
+            self.assertEqual(self.post_json("/api/imoveis", payload).status_code, 201)
+
+        counts = self.client.get("/api/dashboard").get_json()["counts"]
+        self.assertEqual(counts["imoveis"], 4)
+        self.assertEqual(counts["imoveis_locacao"], 3)
+        self.assertEqual(counts["imoveis_energia_solar"], 3)
 
     def test_data_persists_between_requests(self):
         self.post_json("/api/proprietarios", self.person_payload("Persistente"))
@@ -402,6 +655,97 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(records[0]["profissao"], "PROFISSÃO ANTIGA")
         self.assertEqual(records[0]["estado_civil"], "CASADO(A)")
         self.assertEqual(records[0]["email"], "email@exemplo.com")
+
+    def test_existing_contracts_receive_active_status_during_migration(self):
+        database = Path(self.temp_dir.name) / "legacy-contracts.db"
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE proprietario (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            INSERT INTO proprietario (nome_completo) VALUES ('PROPRIETARIO LEGADO');
+            CREATE TABLE inquilinos_clientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            INSERT INTO inquilinos_clientes (nome_completo) VALUES ('CLIENTE LEGADO');
+            CREATE TABLE imoveis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                apelido TEXT NOT NULL,
+                responsavel INTEGER NOT NULL,
+                cep TEXT,
+                estado TEXT,
+                cidade TEXT,
+                bairro TEXT,
+                numero TEXT,
+                complemento TEXT,
+                inscricao_mun TEXT,
+                aluguel REAL NOT NULL DEFAULT 0,
+                numero_energia TEXT,
+                numero_agua TEXT,
+                adm_propriedade INTEGER NOT NULL DEFAULT 0,
+                unidade_geradora TEXT,
+                percentual_energia REAL
+            );
+            INSERT INTO imoveis (apelido, responsavel, aluguel)
+            VALUES ('IMOVEL LEGADO', 1, 1200);
+            CREATE TABLE contratos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                imovel_id INTEGER NOT NULL,
+                inquilino_id INTEGER NOT NULL,
+                data_inicio TEXT NOT NULL,
+                data_fim TEXT NOT NULL,
+                valor_aluguel REAL NOT NULL,
+                valor_caucao REAL
+            );
+            INSERT INTO contratos
+                (imovel_id, inquilino_id, data_inicio, data_fim, valor_aluguel, valor_caucao)
+            VALUES (1, 1, '2026-01-01', '2027-01-01', 1500, 3000);
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        legacy_app = create_app({"TESTING": True, "DATABASE": str(database)})
+        legacy_client = legacy_app.test_client()
+        connection = sqlite3.connect(database)
+        columns = [
+            row[1] for row in connection.execute("PRAGMA table_info(contratos)").fetchall()
+        ]
+        persisted = connection.execute(
+            "SELECT id, status FROM contratos"
+        ).fetchall()
+        connection.close()
+
+        self.assertEqual(columns.count("status"), 1)
+        self.assertEqual(persisted, [(1, "ATIVO")])
+        self.assertEqual(legacy_client.get("/api/contratos").get_json()[0]["status"], "ATIVO")
+
+        create_app({"TESTING": True, "DATABASE": str(database)})
+        connection = sqlite3.connect(database)
+        columns_after_retry = [
+            row[1] for row in connection.execute("PRAGMA table_info(contratos)").fetchall()
+        ]
+        rows_after_retry = connection.execute(
+            "SELECT id, status FROM contratos"
+        ).fetchall()
+        connection.close()
+        self.assertEqual(columns_after_retry.count("status"), 1)
+        self.assertEqual(rows_after_retry, [(1, "ATIVO")])
 
     def test_existing_database_migrates_endereco_without_recreating_data(self):
         database = Path(self.temp_dir.name) / "legacy.db"
@@ -452,12 +796,15 @@ class AppCrudTestCase(unittest.TestCase):
             );
             INSERT INTO imoveis (apelido, responsavel, cidade, aluguel)
             VALUES ('IMÓVEL LEGADO', 1, 'CIDADE LEGADA', 1200);
+            INSERT INTO imoveis (apelido, responsavel, cidade, aluguel, energia_solar)
+            VALUES ('IMOVEL SOLAR LEGADO', 1, 'CIDADE LEGADA', 1300, 1);
             """
         )
         connection.commit()
         connection.close()
 
-        create_app({"TESTING": True, "DATABASE": str(database)})
+        legacy_app = create_app({"TESTING": True, "DATABASE": str(database)})
+        legacy_client = legacy_app.test_client()
         connection = sqlite3.connect(database)
         column_names = {
             row[1] for row in connection.execute("PRAGMA table_info(imoveis)").fetchall()
@@ -467,7 +814,11 @@ class AppCrudTestCase(unittest.TestCase):
             for row in connection.execute("PRAGMA table_info(inquilinos_clientes)").fetchall()
         }
         preserved = connection.execute(
-            "SELECT apelido, cidade, aluguel, tipo_imovel, imobiliaria FROM imoveis WHERE id = 1"
+            "SELECT apelido, cidade, aluguel, tipo_imovel, tipo_operacao, imobiliaria "
+            "FROM imoveis WHERE id = 1"
+        ).fetchone()
+        solar_preserved = connection.execute(
+            "SELECT tipo_operacao FROM imoveis WHERE id = 2"
         ).fetchone()
         client_preserved = connection.execute(
             "SELECT nome_completo, nome_contato FROM inquilinos_clientes WHERE id = 1"
@@ -482,10 +833,37 @@ class AppCrudTestCase(unittest.TestCase):
 
         self.assertIn("endereco", column_names)
         self.assertIn("tipo_imovel", column_names)
+        self.assertIn("tipo_operacao", column_names)
         self.assertIn("imobiliaria", column_names)
         self.assertIn("nome_contato", client_column_names)
         self.assertIn("contratos", table_names)
-        self.assertEqual(preserved, ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0, None, 0))
+        self.assertEqual(
+            preserved,
+            ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0, None, "ALUGUEL", 0),
+        )
+        self.assertEqual(solar_preserved, ("ENERGIA SOLAR",))
+
+        records = legacy_client.get("/api/imoveis").get_json()
+        self.assertEqual(
+            {record["tipo_operacao"] for record in records},
+            {"ALUGUEL", "ENERGIA SOLAR"},
+        )
+        self.assertTrue(all("energia_solar" not in record for record in records))
+
+        create_app({"TESTING": True, "DATABASE": str(database)})
+        migrated_again = sqlite3.connect(database)
+        migrated_columns = [
+            row[1] for row in migrated_again.execute("PRAGMA table_info(imoveis)").fetchall()
+        ]
+        migrated_values = migrated_again.execute(
+            "SELECT id, tipo_operacao FROM imoveis ORDER BY id"
+        ).fetchall()
+        migrated_again.close()
+        self.assertEqual(migrated_columns.count("tipo_operacao"), 1)
+        self.assertEqual(
+            migrated_values,
+            [(1, "ALUGUEL"), (2, "ENERGIA SOLAR")],
+        )
         self.assertEqual(client_preserved, ("CLIENTE LEGADO", None))
 
 

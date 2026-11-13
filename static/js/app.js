@@ -48,7 +48,7 @@
                     value: (record) => [record.endereco, record.numero, record.cidade, record.estado].filter(Boolean).join(" "),
                 },
                 { key: "aluguel", label: "Aluguel referência", type: "number", value: (record) => record.aluguel },
-                { key: "energia_solar", label: "Energia solar", type: "boolean", value: (record) => record.energia_solar },
+                { key: "tipo_operacao", label: "Tipo operação", type: "text", value: (record) => record.tipo_operacao },
             ],
         },
         contratos: {
@@ -63,6 +63,7 @@
                 { key: "inquilino_nome", label: "Inquilino / Cliente", type: "text", value: (record) => record.inquilino_nome },
                 { key: "data_inicio", label: "Início", type: "date", value: (record) => record.data_inicio },
                 { key: "data_fim", label: "Fim", type: "date", value: (record) => record.data_fim },
+                { key: "status", label: "Status", type: "text", value: (record) => record.status },
                 { key: "valor_aluguel", label: "Aluguel", type: "number", value: (record) => record.valor_aluguel },
                 { key: "valor_caucao", label: "Caução", type: "number", value: (record) => record.valor_caucao },
             ],
@@ -94,6 +95,12 @@
         "CHÁCARA/SÍTIO",
         "TERRENO",
     ];
+    const operationTypes = [
+        "ALUGUEL",
+        "ENERGIA SOLAR",
+        "ALUGUEL + ENERGIA SOLAR",
+    ];
+    const contractStatuses = ["ATIVO", "ENCERRADO"];
     const VIA_CEP_FIELDS = ["endereco", "estado", "cidade", "bairro"];
     const textCollator = new Intl.Collator("pt-BR", { numeric: true, sensitivity: "accent" });
 
@@ -104,6 +111,7 @@
         modalMode: "create",
         modalModule: "proprietarios",
         moduleRequestId: 0,
+        ownerFilterId: "",
         owners: [],
         properties: [],
         clients: [],
@@ -139,6 +147,7 @@
         elements.breadcrumbModule = document.getElementById("breadcrumb-module");
         elements.moduleTitle = document.getElementById("module-title");
         elements.moduleDescription = document.getElementById("module-description");
+        elements.ownerFilter = document.getElementById("owner-filter");
         elements.newRecordButton = document.getElementById("new-record-button");
         elements.newRecordLabel = document.getElementById("new-record-label");
         elements.refreshButton = document.getElementById("refresh-button");
@@ -147,9 +156,20 @@
         elements.emptyTitle = document.getElementById("empty-title");
         elements.emptyDescription = document.getElementById("empty-description");
         elements.loadingState = document.getElementById("loading-state");
+        elements.recordsTableCard = document.getElementById("records-table-card");
         elements.recordsHead = document.getElementById("records-head");
         elements.recordsBody = document.getElementById("records-body");
         elements.recordCount = document.getElementById("record-count");
+        elements.contractsTables = document.getElementById("contracts-tables");
+        elements.contractsLoadingState = document.getElementById("contracts-loading-state");
+        elements.activeContractsHead = document.getElementById("active-contracts-head");
+        elements.activeContractsBody = document.getElementById("active-contracts-body");
+        elements.activeContractCount = document.getElementById("active-contract-count");
+        elements.activeContractsEmpty = document.getElementById("active-contracts-empty");
+        elements.closedContractsHead = document.getElementById("closed-contracts-head");
+        elements.closedContractsBody = document.getElementById("closed-contracts-body");
+        elements.closedContractCount = document.getElementById("closed-contract-count");
+        elements.closedContractsEmpty = document.getElementById("closed-contracts-empty");
         elements.modal = document.getElementById("record-modal");
         elements.modalTitle = document.getElementById("modal-title");
         elements.modalDescription = document.getElementById("modal-description");
@@ -176,6 +196,10 @@
         elements.newRecordButton.addEventListener("click", () => openModal("create", null, elements.newRecordButton.dataset.module || state.module));
         elements.emptyAction.addEventListener("click", () => openModal("create", null, elements.emptyAction.dataset.module || state.module));
         elements.refreshButton.addEventListener("click", () => refreshCurrentModule());
+        elements.ownerFilter.addEventListener("change", () => {
+            state.ownerFilterId = elements.ownerFilter.value;
+            refreshCurrentModule();
+        });
         elements.form.addEventListener("submit", handleFormSubmit);
         elements.modalClose.addEventListener("click", closeModal);
         elements.modalCancel.addEventListener("click", closeModal);
@@ -187,6 +211,13 @@
         elements.clearCepButton.addEventListener("click", clearCep);
         elements.recordsHead.addEventListener("click", handleSortHeaderClick);
         elements.recordsBody.addEventListener("click", handleTableAction);
+        elements.activeContractsHead.addEventListener("click", handleSortHeaderClick);
+        elements.activeContractsBody.addEventListener("click", handleTableAction);
+        elements.closedContractsHead.addEventListener("click", handleSortHeaderClick);
+        elements.closedContractsBody.addEventListener("click", handleTableAction);
+        document.querySelectorAll(".contract-empty-action").forEach((button) => {
+            button.addEventListener("click", () => openModal("create", null, "contratos"));
+        });
         elements.menuToggle.addEventListener("click", toggleSidebar);
         elements.sidebarBackdrop.addEventListener("click", closeSidebar);
 
@@ -220,6 +251,7 @@
                 startDate.addEventListener("change", () => updateContractDateConstraints(contractSection));
             }
         }
+        setTableMode();
     }
 
     function populateStaticSelects() {
@@ -233,11 +265,12 @@
 
     async function loadDashboard() {
         try {
-            const data = await apiFetch("/api/dashboard");
+            const data = await apiFetch(withOwnerFilter("/api/dashboard", "dashboard"));
             const counts = data.counts || {};
             document.getElementById("count-proprietarios").textContent = counts.proprietarios || 0;
             document.getElementById("count-inquilinos").textContent = counts.inquilinos_clientes || 0;
-            document.getElementById("count-imoveis").textContent = counts.imoveis || 0;
+            document.getElementById("count-imoveis-locacao").textContent = counts.imoveis_locacao || 0;
+            document.getElementById("count-imoveis-energia-solar").textContent = counts.imoveis_energia_solar || 0;
             document.getElementById("count-contratos").textContent = counts.contratos || 0;
         } catch (error) {
             showToast(error.message, "error");
@@ -248,6 +281,7 @@
         try {
             state.owners = await apiFetch("/api/proprietarios");
             populateOwnerSelect();
+            populateOwnerFilter();
         } catch (error) {
             showToast(error.message, "error");
         }
@@ -256,7 +290,7 @@
     async function loadContractOptions() {
         try {
             const [properties, clients] = await Promise.all([
-                apiFetch("/api/imoveis"),
+                apiFetch(withOwnerFilter("/api/imoveis", "imoveis")),
                 apiFetch("/api/inquilinos-clientes"),
             ]);
             state.properties = properties;
@@ -276,7 +310,7 @@
         const requestId = ++state.moduleRequestId;
         setLoading(true);
         try {
-            const records = await apiFetch(config.endpoint);
+            const records = await apiFetch(withOwnerFilter(config.endpoint, moduleName));
             if (requestId !== state.moduleRequestId || state.module !== moduleName) {
                 return;
             }
@@ -310,6 +344,7 @@
         if (state.module === moduleName) {
             elements.newRecordButton.dataset.module = moduleName;
             elements.emptyAction.dataset.module = moduleName;
+            setTableMode();
             loadModule(moduleName);
             return;
         }
@@ -322,19 +357,42 @@
         elements.moduleTitle.textContent = config.title;
         elements.moduleDescription.textContent = config.description;
         elements.newRecordLabel.textContent = `Novo ${config.singular}`;
+        setTableMode();
         loadModule(moduleName);
+    }
+
+    function setTableMode() {
+        const isContracts = state.module === "contratos";
+        elements.recordsTableCard.hidden = isContracts;
+        elements.contractsTables.hidden = !isContracts;
+    }
+
+    function withOwnerFilter(endpoint, context) {
+        const filteredContexts = ["dashboard", "imoveis", "contratos"];
+        if (!state.ownerFilterId || !filteredContexts.includes(context)) {
+            return endpoint;
+        }
+        const separator = endpoint.includes("?") ? "&" : "?";
+        return `${endpoint}${separator}proprietario_id=${encodeURIComponent(state.ownerFilterId)}`;
     }
 
     function setLoading(isLoading) {
         elements.loadingState.hidden = !isLoading;
+        elements.contractsLoadingState.hidden = !isLoading;
         if (isLoading) {
             elements.emptyState.hidden = true;
+            elements.activeContractsEmpty.hidden = true;
+            elements.closedContractsEmpty.hidden = true;
         }
     }
 
     function renderTable() {
         const config = moduleConfig[state.module];
         const sort = state.sortByModule[state.module] || null;
+        if (state.module === "contratos") {
+            renderContractsTables(config, sort);
+            return;
+        }
         elements.recordsHead.innerHTML = `<tr>${config.columns.map((column) => renderSortHeader(column, sort)).join("")}<th class="actions-cell" scope="col">Ações</th></tr>`;
         elements.recordsBody.innerHTML = sortRecords(state.records, config.columns, sort)
             .map((record) => renderRow(record, sort))
@@ -343,6 +401,39 @@
         elements.emptyTitle.textContent = config.empty;
         elements.emptyDescription.textContent = config.emptyDescription;
         elements.emptyState.hidden = state.records.length !== 0;
+    }
+
+    function renderContractsTables(config, sort) {
+        const activeRecords = state.records.filter((record) => record.status === "ATIVO");
+        const closedRecords = state.records.filter((record) => record.status === "ENCERRADO");
+        renderContractTable(
+            activeRecords,
+            elements.activeContractsHead,
+            elements.activeContractsBody,
+            elements.activeContractsEmpty,
+            elements.activeContractCount,
+            config,
+            sort,
+        );
+        renderContractTable(
+            closedRecords,
+            elements.closedContractsHead,
+            elements.closedContractsBody,
+            elements.closedContractsEmpty,
+            elements.closedContractCount,
+            config,
+            sort,
+        );
+        elements.recordCount.textContent = `${state.records.length} ${state.records.length === 1 ? "registro" : "registros"}`;
+    }
+
+    function renderContractTable(records, head, body, emptyState, recordCount, config, sort) {
+        head.innerHTML = `<tr>${config.columns.map((column) => renderSortHeader(column, sort)).join("")}<th class="actions-cell" scope="col">Ações</th></tr>`;
+        body.innerHTML = sortRecords(records, config.columns, sort)
+            .map((record) => renderRow(record, sort))
+            .join("");
+        recordCount.textContent = `${records.length} ${records.length === 1 ? "registro" : "registros"}`;
+        emptyState.hidden = records.length !== 0;
     }
 
     function renderSortHeader(column, sort) {
@@ -363,7 +454,7 @@
 
     function handleSortHeaderClick(event) {
         const button = event.target.closest("[data-sort-key]");
-        if (!button || !elements.recordsHead.contains(button)) {
+        if (!button || !button.closest("thead")) {
             return;
         }
 
@@ -469,6 +560,7 @@
                 <td class="${sortCellClass(sort, "inquilino_nome")}"><div class="person-cell"><span class="row-avatar">${initials(record.inquilino_nome)}</span><span>${escapeHtml(record.inquilino_nome)}<small class="subtle-text">Código #${record.inquilino_id}</small></span></div></td>
                 <td class="${sortCellClass(sort, "data_inicio")}">${escapeHtml(formatDate(record.data_inicio))}</td>
                 <td class="${sortCellClass(sort, "data_fim")}">${escapeHtml(formatDate(record.data_fim))}</td>
+                <td class="${sortCellClass(sort, "status")}"><span class="status-pill ${record.status === "ENCERRADO" ? "off" : ""}">${contractStatusLabel(record.status)}</span></td>
                 <td class="${sortCellClass(sort, "valor_aluguel")}">${formatCurrency(record.valor_aluguel)}</td>
                 <td class="${sortCellClass(sort, "valor_caucao")}">${formatCurrency(record.valor_caucao)}</td>
                 <td class="actions-cell">${actionButtons(record.id)}</td>
@@ -482,14 +574,13 @@
                 record.cidade,
                 record.estado,
             ].filter(Boolean).join(" · ") || "Endereço não informado";
-            const solar = Number(record.energia_solar) === 1;
             return `<tr>
                 <td class="${sortCellClass(sort, "tipo_imovel")}">${escapeHtml(record.tipo_imovel || "Não informado")}</td>
                 <td class="${sortCellClass(sort, "apelido")}"><div class="property-cell"><span class="row-avatar property">⌂</span><span>${escapeHtml(record.apelido)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
                 <td class="${sortCellClass(sort, "responsavel_nome")}">${escapeHtml(record.responsavel_nome || "—")}</td>
                 <td class="${sortCellClass(sort, "endereco")}">${escapeHtml(location)}</td>
                 <td class="${sortCellClass(sort, "aluguel")}">${formatCurrency(record.aluguel)}</td>
-                <td class="${sortCellClass(sort, "energia_solar")}"><span class="status-pill ${solar ? "" : "off"}">${solar ? "Sim" : "Não"}</span></td>
+                <td class="${sortCellClass(sort, "tipo_operacao")}"><span class="status-pill">${escapeHtml(record.tipo_operacao || "Não informado")}</span></td>
                 <td class="actions-cell">${actionButtons(record.id)}</td>
             </tr>`;
         }
@@ -501,6 +592,10 @@
             <td class="${sortCellClass(sort, "email")}">${escapeHtml(record.email || "—")}</td>
             <td class="actions-cell">${actionButtons(record.id)}</td>
         </tr>`;
+    }
+
+    function contractStatusLabel(status) {
+        return status === "ENCERRADO" ? "Encerrado" : "Ativo";
     }
 
     function actionButtons(id) {
@@ -612,7 +707,13 @@
     function clearForm(section) {
         section.querySelectorAll("[data-field]").forEach((field) => {
             if (field.tagName === "SELECT") {
-                field.value = ["adm_propriedade", "imobiliaria", "energia_solar"].includes(field.dataset.field) ? "0" : "";
+                const selectDefaults = {
+                    adm_propriedade: "0",
+                    imobiliaria: "0",
+                    tipo_operacao: "ALUGUEL",
+                    status: "ATIVO",
+                };
+                field.value = selectDefaults[field.dataset.field] || "";
             } else {
                 field.value = "";
             }
@@ -669,6 +770,24 @@
             select.value = currentValue;
         }
         select.disabled = state.owners.length === 0;
+    }
+
+    function populateOwnerFilter() {
+        const select = elements.ownerFilter;
+        if (!select) {
+            return;
+        }
+
+        const currentValue = state.ownerFilterId;
+        select.innerHTML = "<option value=\"\">TODOS</option>";
+        state.owners.forEach((owner) => select.add(new Option(owner.nome_completo, owner.id)));
+
+        if (currentValue && state.owners.some((owner) => String(owner.id) === String(currentValue))) {
+            select.value = currentValue;
+        } else {
+            state.ownerFilterId = "";
+            select.value = "";
+        }
     }
 
     function populateContractSelects() {
@@ -919,6 +1038,12 @@
             if (!propertyTypes.includes(data.tipo_imovel)) {
                 return "Tipo de imóvel inválido.";
             }
+            if (!data.tipo_operacao) {
+                return "Tipo de operação é obrigatório.";
+            }
+            if (!operationTypes.includes(data.tipo_operacao)) {
+                return "Tipo de operação inválido.";
+            }
             if (!data.apelido) {
                 return "Apelido do imóvel é obrigatório.";
             }
@@ -950,6 +1075,12 @@
             }
             if (!data.valor_aluguel) {
                 return "Valor do aluguel é obrigatório.";
+            }
+            if (!data.status) {
+                return "Selecione o status do contrato.";
+            }
+            if (!contractStatuses.includes(data.status)) {
+                return "Status de contrato inválido.";
             }
         }
         if (data.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(data.email)) {
