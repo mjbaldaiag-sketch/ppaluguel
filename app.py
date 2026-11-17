@@ -3,11 +3,21 @@ from __future__ import annotations
 import re
 import sqlite3
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as escape_xml
 
-from flask import Flask, current_app, g, jsonify, render_template, request
+from flask import Flask, current_app, g, jsonify, render_template, request, send_file
+from reportlab.graphics.charts.piecharts import Pie
+from reportlab.graphics.shapes import Drawing
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -67,6 +77,8 @@ CONTRACT_STATUSES = (
     "ENCERRADO",
 )
 MAX_MONTHLY_GENERATION_KWH = 9_999_999
+SALE_PRICE_SCALE = 10_000
+SALE_PRICE_MAX_SCALED = (1 << 63) - 1
 
 PERSON_FIELDS = (
     "nome_completo",
@@ -210,6 +222,9 @@ def init_db() -> None:
                 percentual_energia IS NULL OR
                 (percentual_energia >= 0 AND percentual_energia <= 100)
             ),
+            cliente_energia_solar_id INTEGER,
+            FOREIGN KEY (cliente_energia_solar_id)
+                REFERENCES inquilinos_clientes (id) ON DELETE RESTRICT,
             FOREIGN KEY (responsavel) REFERENCES proprietario (id) ON DELETE RESTRICT
         );
         """
@@ -252,6 +267,15 @@ def migrate_database(db: sqlite3.Connection) -> None:
         )
     if "tipo_operacao" not in columns:
         db.execute("ALTER TABLE imoveis ADD COLUMN tipo_operacao TEXT")
+    if "cliente_energia_solar_id" not in columns:
+        db.execute(
+            "ALTER TABLE imoveis ADD COLUMN cliente_energia_solar_id INTEGER "
+            "REFERENCES inquilinos_clientes (id) ON DELETE RESTRICT"
+        )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_imoveis_cliente_energia_solar "
+        "ON imoveis (cliente_energia_solar_id)"
+    )
 
     if "energia_solar" in columns:
         db.execute(
@@ -291,6 +315,12 @@ def migrate_database(db: sqlite3.Connection) -> None:
                     geracao_mensal_kwh <= {MAX_MONTHLY_GENERATION_KWH}
                 )
             ),
+            preco_venda_kwh INTEGER CHECK (
+                preco_venda_kwh IS NULL OR (
+                    typeof(preco_venda_kwh) = 'integer' AND
+                    preco_venda_kwh >= 0
+                )
+            ),
             FOREIGN KEY (responsavel) REFERENCES proprietario (id) ON DELETE RESTRICT
         )
         """
@@ -308,6 +338,12 @@ def migrate_database(db: sqlite3.Connection) -> None:
         db.execute(
             "ALTER TABLE unidades_geracao "
             "ADD COLUMN numero_unidade_geradora_consumidora TEXT"
+        )
+    if "preco_venda_kwh" not in generation_columns:
+        db.execute(
+            "ALTER TABLE unidades_geracao ADD COLUMN preco_venda_kwh INTEGER "
+            "CHECK (preco_venda_kwh IS NULL OR "
+            "(typeof(preco_venda_kwh) = 'integer' AND preco_venda_kwh >= 0))"
         )
 
     db.executescript(
@@ -636,6 +672,54 @@ def parse_decimal(value: Any, label: str, *, required: bool = False) -> float | 
     return float(number)
 
 
+def parse_sale_price(value: Any, *, required: bool = False) -> int | None:
+    """Parse a Brazilian monetary value into exact ten-thousandths."""
+
+    label = "Preço de venda"
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if required:
+            raise ValueError(f"{label} Ã© obrigatÃ³rio.")
+        return None
+
+    if isinstance(value, bool):
+        raise ValueError(f"{label} deve ser um nÃºmero vÃ¡lido.")
+
+    text = str(value).strip().replace("R$", "").replace(" ", "")
+    if not text:
+        if required:
+            raise ValueError(f"{label} Ã© obrigatÃ³rio.")
+        return None
+
+    try:
+        if "," in text:
+            text = text.replace(".", "").replace(",", ".")
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"{label} deve ser um nÃºmero vÃ¡lido.") from None
+
+    if not number.is_finite() or number < 0:
+        raise ValueError(f"{label} deve ser um nÃºmero nÃ£o negativo.")
+    if number.as_tuple().exponent < -4:
+        raise ValueError(f"{label} pode ter no mÃ¡ximo 4 casas decimais.")
+
+    scaled = number * SALE_PRICE_SCALE
+    if scaled != scaled.to_integral_value():
+        raise ValueError(f"{label} pode ter no mÃ¡ximo 4 casas decimais.")
+    scaled_value = int(scaled)
+    if scaled_value > SALE_PRICE_MAX_SCALED:
+        raise ValueError(f"{label} estÃ¡ fora do limite permitido.")
+    return scaled_value
+
+
+def format_sale_price(value: Any) -> str | None:
+    """Return the exact API representation of a scaled sale price."""
+
+    if value is None:
+        return None
+    decimal_value = Decimal(int(value)) / Decimal(SALE_PRICE_SCALE)
+    return format(decimal_value, "f").rstrip("0").rstrip(".") or "0"
+
+
 def parse_boolean(value: Any, label: str) -> int:
     if isinstance(value, bool):
         return int(value)
@@ -729,6 +813,17 @@ def property_values(
             "A unidade geradora deve ser informada pelo identificador da unidade cadastrada."
         )
 
+    solar_client_id = optional_foreign_key(
+        data.get("cliente_energia_solar_id"),
+        "cliente de energia solar",
+        "inquilinos_clientes",
+        db,
+    )
+    if generation_unit_id is not None and solar_client_id is None:
+        raise ValueError(
+            "Cliente energia solar e obrigatorio quando uma unidade geradora e selecionada."
+        )
+
     rent = parse_decimal(data.get("aluguel"), "Aluguel", required=True)
     energy_percentage = parse_decimal(
         data.get("percentual_energia"),
@@ -758,6 +853,7 @@ def property_values(
         parse_boolean(data.get("imobiliaria"), "Administração por imobiliária"),
             operation_type,
             energy_percentage,
+            solar_client_id,
         ),
         generation_unit_id,
     )
@@ -811,6 +907,7 @@ def generation_unit_values(
         clean_text(data.get("numero_instalacao")),
         clean_text(data.get("numero_unidade_geradora_consumidora")),
         parse_monthly_generation(data.get("geracao_mensal_kwh")),
+        parse_sale_price(data.get("preco_venda_kwh")),
     )
 
 
@@ -1059,6 +1156,14 @@ def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def generation_unit_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    data = row_dict(row)
+    if data is None:
+        return None
+    data["preco_venda_kwh"] = format_sale_price(data.get("preco_venda_kwh"))
+    return data
+
+
 def get_property(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
     return db.execute(
         """
@@ -1070,6 +1175,7 @@ def get_property(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
                COALESCE(NULLIF(TRIM(unit.inscricao_mun), ''), 'Unidade #' || unit.id)
                    AS unidade_geradora_identificacao,
                i.unidade_geradora_legada, i.percentual_energia,
+               i.cliente_energia_solar_id,
                p.nome_completo AS responsavel_nome
         FROM imoveis AS i
         JOIN proprietario AS p ON p.id = i.responsavel
@@ -1105,7 +1211,7 @@ def get_generation_unit(db: sqlite3.Connection, record_id: int) -> sqlite3.Row |
         SELECT u.id, u.responsavel, u.cep, u.endereco, u.estado, u.cidade,
                u.bairro, u.numero, u.complemento, u.inscricao_mun,
                u.numero_instalacao, u.numero_unidade_geradora_consumidora,
-               u.geracao_mensal_kwh,
+               u.geracao_mensal_kwh, u.preco_venda_kwh,
                p.nome_completo AS responsavel_nome
         FROM unidades_geracao AS u
         JOIN proprietario AS p ON p.id = u.responsavel
@@ -1113,6 +1219,372 @@ def get_generation_unit(db: sqlite3.Connection, record_id: int) -> sqlite3.Row |
         """,
         (record_id,),
     ).fetchone()
+
+
+def get_generation_distribution(
+    db: sqlite3.Connection, record_id: int
+) -> dict[str, Any] | None:
+    """Return the solar distribution rows linked to one generation unit."""
+
+    unit = get_generation_unit(db, record_id)
+    if unit is None:
+        return None
+
+    rows = db.execute(
+        """
+        SELECT i.id AS imovel_id,
+               i.apelido AS imovel_nome,
+               ic.id AS cliente_id,
+               ic.nome_completo AS cliente_nome,
+               i.percentual_energia AS percentual_distribuicao,
+               i.adm_propriedade AS cobranca_solar
+        FROM imovel_unidade_geradora AS link
+        JOIN imoveis AS i ON i.id = link.imovel_id
+        JOIN inquilinos_clientes AS ic
+          ON ic.id = i.cliente_energia_solar_id
+        WHERE link.unidade_geradora_id = ?
+          AND i.percentual_energia IS NOT NULL
+        ORDER BY i.apelido COLLATE NOCASE, i.id
+        """,
+        (record_id,),
+    ).fetchall()
+
+    distributions = []
+    billings = []
+    total_percentage = Decimal("0")
+    distribution_kwh_values = []
+    billing_kwh_values = []
+    billing_amount_values = []
+    for row in rows:
+        distribution = row_dict(row)
+        is_chargeable = bool(distribution.pop("cobranca_solar", 0))
+        distribution["kwh_mes_estimado"] = estimate_distributed_generation(
+            unit["geracao_mensal_kwh"], distribution["percentual_distribuicao"]
+        )
+        distribution["cliente_nome"] = repair_text_encoding(
+            distribution["cliente_nome"]
+        )
+        distribution["imovel_nome"] = repair_text_encoding(
+            distribution["imovel_nome"]
+        )
+        distributions.append(distribution)
+
+        total_percentage += Decimal(str(distribution["percentual_distribuicao"]))
+        distribution_kwh_values.append(distribution["kwh_mes_estimado"])
+
+        if is_chargeable:
+            monthly_charge = calculate_monthly_charge(
+                distribution["kwh_mes_estimado"], unit["preco_venda_kwh"]
+            )
+            billing = {
+                "imovel_id": distribution["imovel_id"],
+                "imovel_nome": distribution["imovel_nome"],
+                "cliente_id": distribution["cliente_id"],
+                "cliente_nome": distribution["cliente_nome"],
+                "kwh_mes_estimado": distribution["kwh_mes_estimado"],
+                "valor_mensal": format_monthly_charge(monthly_charge),
+            }
+            billings.append(billing)
+            billing_kwh_values.append(billing["kwh_mes_estimado"])
+            billing_amount_values.append(monthly_charge)
+
+    identification = (
+        repair_text_encoding(unit["inscricao_mun"])
+        if unit["inscricao_mun"]
+        else f"Unidade #{unit['id']}"
+    )
+    return {
+        "unidade": {
+            "id": unit["id"],
+            "identificacao": identification,
+        },
+        "distribuicoes": distributions,
+        "cobrancas": billings,
+        "totais": {
+            "distribuicao": {
+                "quantidade_imoveis": len(distributions),
+                "percentual_distribuicao": float(total_percentage),
+                "kwh_mes_estimado": sum_nullable_integers(distribution_kwh_values),
+            },
+            "cobranca": {
+                "quantidade_imoveis": len(billings),
+                "kwh_mes_estimado": sum_nullable_integers(billing_kwh_values),
+                "valor_mensal": sum_monthly_charges(billing_amount_values),
+            },
+        },
+    }
+
+
+def estimate_distributed_generation(
+    monthly_generation: int | None, distribution_percentage: Any
+) -> int | None:
+    if monthly_generation is None or distribution_percentage is None:
+        return None
+
+    estimated_generation = (
+        Decimal(str(monthly_generation))
+        * Decimal(str(distribution_percentage))
+        / Decimal("100")
+    )
+    return int(estimated_generation.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def calculate_monthly_charge(
+    estimated_kwh: int | None, scaled_sale_price: int | None
+) -> Decimal | None:
+    if estimated_kwh is None or scaled_sale_price is None:
+        return None
+
+    monthly_charge = (
+        Decimal(str(estimated_kwh))
+        * Decimal(str(scaled_sale_price))
+        / Decimal(SALE_PRICE_SCALE)
+    )
+    return monthly_charge.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def format_monthly_charge(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    return format(value, ".2f")
+
+
+def sum_nullable_integers(values: list[int | None]) -> int | None:
+    if not values:
+        return 0
+    if any(value is None for value in values):
+        return None
+    return sum(values)
+
+
+def sum_monthly_charges(values: list[Decimal | None]) -> str | None:
+    if not values:
+        return "0.00"
+    if any(value is None for value in values):
+        return None
+    return format_monthly_charge(sum(values, Decimal("0.00")))
+
+
+def pdf_first_client_name(value: Any) -> str:
+    name = repair_text_encoding(str(value or "")).strip()
+    return name.split()[0] if name else "Cliente não informado"
+
+
+def pdf_count_label(value: Any) -> str:
+    count = max(0, int(value or 0))
+    return f"{count} imóvel" if count == 1 else f"{count} imóveis"
+
+
+def pdf_integer(value: Any) -> str:
+    if value is None:
+        return "—"
+    return f"{int(value):,}".replace(",", ".")
+
+
+def pdf_percentage(value: Any) -> str:
+    if value is None:
+        return "—"
+    rounded = Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return f"{int(rounded):,}".replace(",", ".") + " %"
+
+
+def pdf_currency(value: Any) -> str:
+    if value is None:
+        return "—"
+    amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    whole, cents = format(amount, ".2f").split(".")
+    return f"R$ {int(whole):,}".replace(",", ".") + f",{cents}"
+
+
+def pdf_paragraph(text: str, style: ParagraphStyle) -> Paragraph:
+    return Paragraph(escape_xml(str(text)), style)
+
+
+def build_distribution_pdf(distribution: dict[str, Any]) -> BytesIO:
+    buffer = BytesIO()
+    page_width, page_height = landscape(A4)
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=(page_width, page_height),
+        rightMargin=16 * mm,
+        leftMargin=16 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+        title="Relatório analítico de energia solar",
+        author="PPA Aluguel",
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "SolarReportTitle",
+        parent=styles["Title"],
+        alignment=TA_LEFT,
+        fontName="Helvetica-Bold",
+        fontSize=18,
+        leading=22,
+        textColor=colors.HexColor("#38465d"),
+        spaceAfter=5,
+    )
+    subtitle_style = ParagraphStyle(
+        "SolarReportSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#6e7b8e"),
+        spaceAfter=12,
+    )
+    heading_style = ParagraphStyle(
+        "SolarReportHeading",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        leading=15,
+        textColor=colors.HexColor("#38465d"),
+        spaceBefore=8,
+        spaceAfter=7,
+    )
+    body_style = ParagraphStyle(
+        "SolarReportBody",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#536076"),
+    )
+
+    unit = distribution.get("unidade") or {}
+    identification = unit.get("identificacao") or "Unidade sem identificação"
+    distributions = list(distribution.get("distribuicoes") or [])
+    billings = list(distribution.get("cobrancas") or [])
+    totals = distribution.get("totais") or {}
+    distribution_totals = totals.get("distribuicao") or {}
+    billing_totals = totals.get("cobranca") or {}
+    sorted_distributions = sorted(
+        enumerate(distributions),
+        key=lambda item: (-float(item[1].get("percentual_distribuicao") or 0), item[0]),
+    )
+    sorted_distributions = [item[1] for item in sorted_distributions]
+
+    story = [
+        pdf_paragraph("Relatório analítico de energia solar", title_style),
+        pdf_paragraph(f"Unidade geradora: {identification}", subtitle_style),
+    ]
+
+    positive_distributions = [
+        item
+        for item in sorted_distributions
+        if float(item.get("percentual_distribuicao") or 0) > 0
+    ]
+    if positive_distributions:
+        chart = Drawing(420, 190)
+        pie = Pie()
+        pie.x = 105
+        pie.y = 10
+        pie.width = 170
+        pie.height = 170
+        pie.data = [float(item["percentual_distribuicao"]) for item in positive_distributions]
+        pie.labels = [
+            f"{pdf_first_client_name(item.get('cliente_nome'))} "
+            f"{pdf_percentage(item.get('percentual_distribuicao'))}"
+            for item in positive_distributions
+        ]
+        chart_colors = (
+            "#4f63d9",
+            "#36a77d",
+            "#d9a83d",
+            "#d95b67",
+            "#8d6ac8",
+            "#4aa9c8",
+            "#d17a4f",
+            "#6f7f9d",
+        )
+        for index, color in enumerate(chart_colors[: len(pie.data)]):
+            pie.slices[index].fillColor = colors.HexColor(color)
+            pie.slices[index].strokeColor = colors.white
+        chart.add(pie)
+        story.extend([chart, Spacer(1, 4)])
+    else:
+        story.append(pdf_paragraph("Não há percentuais maiores que zero para desenhar o gráfico.", body_style))
+
+    story.append(
+        pdf_paragraph(
+            f"Tabela de distribuição ({pdf_count_label(distribution_totals.get('quantidade_imoveis'))})",
+            heading_style,
+        )
+    )
+    distribution_rows = [[
+        "Cliente energia solar",
+        "Percentual de distribuição (%)",
+        "kWh/mês estimado",
+    ]]
+    distribution_rows.extend(
+        [
+            pdf_first_client_name(item.get("cliente_nome")),
+            pdf_percentage(item.get("percentual_distribuicao")),
+            pdf_integer(item.get("kwh_mes_estimado")),
+        ]
+        for item in sorted_distributions
+    )
+    distribution_rows.append([
+        "Total",
+        pdf_percentage(distribution_totals.get("percentual_distribuicao")),
+        pdf_integer(distribution_totals.get("kwh_mes_estimado")),
+    ])
+    story.append(
+        build_pdf_table(
+            distribution_rows,
+            [86 * mm, 65 * mm, 48 * mm],
+        )
+    )
+
+    story.append(
+        pdf_paragraph(
+            f"Tabela de cobrança ({pdf_count_label(billing_totals.get('quantidade_imoveis'))})",
+            heading_style,
+        )
+    )
+    billing_rows = [["Cliente energia solar", "kWh/mês estimado", "R$/mês"]]
+    billing_rows.extend(
+        [
+            pdf_first_client_name(item.get("cliente_nome")),
+            pdf_integer(item.get("kwh_mes_estimado")),
+            pdf_currency(item.get("valor_mensal")),
+        ]
+        for item in billings
+    )
+    billing_rows.append([
+        "Total",
+        pdf_integer(billing_totals.get("kwh_mes_estimado")),
+        pdf_currency(billing_totals.get("valor_mensal")),
+    ])
+    story.append(build_pdf_table(billing_rows, [86 * mm, 65 * mm, 48 * mm]))
+    document.build(story)
+    buffer.seek(0)
+    return buffer
+
+
+def build_pdf_table(rows: list[list[str]], widths: list[float]) -> Table:
+    table = Table(rows, colWidths=widths, repeatRows=1, hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2f8")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#536076")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor("#536076")),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#dfe6f0")),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f1f5fa")),
+                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                ("LINEABOVE", (0, -1), (-1, -1), 1, colors.HexColor("#bfcbdc")),
+            ]
+        )
+    )
+    return table
 
 
 def get_contract(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
@@ -1350,6 +1822,16 @@ def register_routes(app: Flask) -> None:
                 "Este inquilino/cliente possui contratos vinculados. Exclua-os antes de remover o cadastro.",
                 409,
             )
+        property_linked = db.execute(
+            "SELECT COUNT(*) FROM imoveis WHERE cliente_energia_solar_id = ?",
+            (record_id,),
+        ).fetchone()[0]
+        if property_linked:
+            return error_response(
+                "Este inquilino/cliente possui imoveis vinculados como cliente de energia solar. "
+                "Remova o vinculo antes de remover o cadastro.",
+                409,
+            )
         db.execute("DELETE FROM inquilinos_clientes WHERE id = ?", (record_id,))
         db.commit()
         return ("", 204)
@@ -1372,6 +1854,7 @@ def register_routes(app: Flask) -> None:
                        COALESCE(NULLIF(TRIM(unit.inscricao_mun), ''), 'Unidade #' || unit.id)
                            AS unidade_geradora_identificacao,
                        i.unidade_geradora_legada, i.percentual_energia,
+                       i.cliente_energia_solar_id,
                        p.nome_completo AS responsavel_nome
                 FROM imoveis AS i
                 JOIN proprietario AS p ON p.id = i.responsavel
@@ -1398,8 +1881,9 @@ def register_routes(app: Flask) -> None:
                 INSERT INTO imoveis
                     (tipo_imovel, apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
                      complemento, inscricao_mun, aluguel, numero_energia, numero_agua,
-                     adm_propriedade, imobiliaria, tipo_operacao, percentual_energia)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     adm_propriedade, imobiliaria, tipo_operacao, percentual_energia,
+                     cliente_energia_solar_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -1434,7 +1918,8 @@ def register_routes(app: Flask) -> None:
                     SET tipo_imovel = ?, apelido = ?, responsavel = ?, cep = ?, endereco = ?, estado = ?,
                         cidade = ?, bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
                         aluguel = ?, numero_energia = ?, numero_agua = ?,
-                        adm_propriedade = ?, imobiliaria = ?, tipo_operacao = ?, percentual_energia = ?
+                        adm_propriedade = ?, imobiliaria = ?, tipo_operacao = ?, percentual_energia = ?,
+                        cliente_energia_solar_id = ?
                     WHERE id = ?
                     """,
                     (*values, record_id),
@@ -1475,7 +1960,7 @@ def register_routes(app: Flask) -> None:
                 SELECT u.id, u.responsavel, u.cep, u.endereco, u.estado, u.cidade,
                        u.bairro, u.numero, u.complemento, u.inscricao_mun,
                        u.numero_instalacao, u.numero_unidade_geradora_consumidora,
-                       u.geracao_mensal_kwh,
+                       u.geracao_mensal_kwh, u.preco_venda_kwh,
                        p.nome_completo AS responsavel_nome
                 FROM unidades_geracao AS u
                 JOIN proprietario AS p ON p.id = u.responsavel
@@ -1484,7 +1969,7 @@ def register_routes(app: Flask) -> None:
                 """,
                 query_params,
             ).fetchall()
-            return jsonify([row_dict(row) for row in rows])
+            return jsonify([generation_unit_dict(row) for row in rows])
 
         data = payload()
         if data is None:
@@ -1499,14 +1984,15 @@ def register_routes(app: Flask) -> None:
             INSERT INTO unidades_geracao
                 (responsavel, cep, endereco, estado, cidade, bairro, numero,
                  complemento, inscricao_mun, numero_instalacao,
-                 numero_unidade_geradora_consumidora, geracao_mensal_kwh)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 numero_unidade_geradora_consumidora, geracao_mensal_kwh,
+                 preco_venda_kwh)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
         db.commit()
         row = get_generation_unit(db, cursor.lastrowid)
-        return jsonify(row_dict(row)), 201
+        return jsonify(generation_unit_dict(row)), 201
 
     @app.route("/api/unidades-geracao/<int:record_id>", methods=["GET", "PUT", "DELETE"])
     def generation_unit_item(record_id: int):
@@ -1515,7 +2001,7 @@ def register_routes(app: Flask) -> None:
         if row is None:
             return error_response("Unidade de geração não encontrada.", 404)
         if request.method == "GET":
-            return jsonify(row_dict(row))
+            return jsonify(generation_unit_dict(row))
         if request.method == "PUT":
             data = payload()
             if data is None:
@@ -1530,14 +2016,14 @@ def register_routes(app: Flask) -> None:
                 SET responsavel = ?, cep = ?, endereco = ?, estado = ?, cidade = ?,
                     bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
                     numero_instalacao = ?, numero_unidade_geradora_consumidora = ?,
-                    geracao_mensal_kwh = ?
+                    geracao_mensal_kwh = ?, preco_venda_kwh = ?
                 WHERE id = ?
                 """,
                 (*values, record_id),
             )
             db.commit()
             updated = get_generation_unit(db, record_id)
-            return jsonify(row_dict(updated))
+            return jsonify(generation_unit_dict(updated))
 
         linked = db.execute(
             "SELECT COUNT(*) FROM imovel_unidade_geradora WHERE unidade_geradora_id = ?",
@@ -1555,6 +2041,29 @@ def register_routes(app: Flask) -> None:
             db.rollback()
             return error_response("NÃ£o foi possÃ­vel excluir a unidade geradora.", 409)
         return ("", 204)
+
+    @app.route("/api/unidades-geracao/<int:record_id>/distribuicao", methods=["GET"])
+    def generation_unit_distribution(record_id: int):
+        db = get_db()
+        distribution = get_generation_distribution(db, record_id)
+        if distribution is None:
+            return error_response("Unidade de geração não encontrada.", 404)
+        return jsonify(distribution)
+
+    @app.route(
+        "/api/unidades-geracao/<int:record_id>/distribuicao/pdf", methods=["GET"]
+    )
+    def generation_unit_distribution_pdf(record_id: int):
+        db = get_db()
+        distribution = get_generation_distribution(db, record_id)
+        if distribution is None:
+            return error_response("Unidade de geração não encontrada.", 404)
+        return send_file(
+            build_distribution_pdf(distribution),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"relatorio-energia-solar-{record_id}.pdf",
+        )
 
     @app.route("/api/contratos", methods=["GET", "POST"])
     def contracts_collection():

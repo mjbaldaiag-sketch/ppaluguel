@@ -428,6 +428,12 @@
                         </select>
                     </label>
                     <label class="form-field">
+                        <span id="cliente-energia-solar-label">Cliente energia solar</span>
+                        <select data-field="cliente_energia_solar_id" id="cliente-energia-solar-select">
+                            <option value="">Nenhum</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
                         <span id="percentual-energia-label">Percentual de energia</span>
                         <input type="number" data-field="percentual_energia" min="0" max="100" step="0.01" placeholder="0,00">
                     </label>
@@ -494,6 +500,10 @@
                     <label class="form-field generation-field">
                         <span>Est. de geração mensal (kWh/mês)</span>
                         <input type="number" data-field="geracao_mensal_kwh" min="0" max="9999999" step="1" inputmode="numeric" placeholder="0 a 9.999.999">
+                    </label>
+                    <label class="form-field">
+                        <span>Preço de venda (R$/kWh)</span>
+                        <input type="text" data-field="preco_venda_kwh" data-mask="sale-price" inputmode="decimal" placeholder="R$ 0,0000">
                     </label>
                 </div>
             </div>
@@ -602,6 +612,119 @@
                 <button class="primary-button" id="modal-submit" type="submit">Salvar cadastro</button>
             </div>
         </form>
+    </div>
+</div>
+
+<div class="modal-overlay" id="distribution-modal" role="dialog" aria-modal="true" aria-labelledby="distribution-modal-title" hidden>
+    <div class="modal-card distribution-modal-card">
+        <div class="modal-header">
+            <div>
+                <span class="eyebrow">Análise</span>
+                <h2 id="distribution-modal-title">Distribuição da unidade</h2>
+                <p id="distribution-modal-description">Confira os clientes e percentuais dos imóveis vinculados.</p>
+            </div>
+            <button class="modal-close" id="distribution-modal-close" type="button" aria-label="Fechar">×</button>
+        </div>
+
+        <div class="distribution-modal-body">
+            <div class="distribution-unit-summary">
+                <span>Unidade geradora</span>
+                <strong id="distribution-unit-label">—</strong>
+            </div>
+
+            <div class="loading-state distribution-loading" id="distribution-loading" hidden>
+                <div class="spinner" aria-hidden="true"></div>
+                <span>Carregando distribuição...</span>
+            </div>
+
+            <div class="distribution-message" id="distribution-error" role="alert" hidden></div>
+            <div class="empty-state distribution-empty" id="distribution-empty" hidden>
+                <div class="empty-icon" aria-hidden="true">∅</div>
+                <h3>Nenhuma distribuição encontrada</h3>
+                <p>Não há imóveis vinculados com cliente e percentual de energia cadastrados.</p>
+            </div>
+
+            <div class="distribution-layout" id="distribution-layout" hidden>
+                <section class="distribution-panel distribution-chart-panel" aria-labelledby="distribution-chart-title">
+                    <div class="distribution-panel-heading">
+                        <div>
+                            <h3 id="distribution-chart-title">Distribuição por cliente</h3>
+                            <p>Fatias proporcionais aos percentuais informados.</p>
+                        </div>
+                    </div>
+                    <div class="distribution-chart-wrap">
+                        <svg id="distribution-chart" class="distribution-chart" viewBox="0 0 460 460" role="img" aria-labelledby="distribution-chart-title"></svg>
+                        <p class="distribution-chart-empty" id="distribution-chart-empty" hidden>
+                            Não há percentuais maiores que zero para desenhar o gráfico.
+                        </p>
+                    </div>
+                    <div class="distribution-legend" id="distribution-legend" aria-label="Legenda da distribuição"></div>
+                </section>
+
+                <div class="distribution-tables">
+                    <section class="distribution-panel distribution-table-panel" aria-labelledby="distribution-table-title">
+                        <div class="distribution-panel-heading">
+                            <div>
+                                <h3 id="distribution-table-title">Tabela de distribuição <span class="distribution-table-count" id="distribution-table-count">(0 imóveis)</span></h3>
+                                <p>Uma linha para cada imóvel vinculado.</p>
+                            </div>
+                        </div>
+                        <div class="distribution-table-scroll">
+                            <table class="distribution-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Cliente energia solar</th>
+                                        <th scope="col">Percentual de distribuição (%)</th>
+                                        <th scope="col">kWh/mês estimado</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="distribution-table-body"></tbody>
+                                <tfoot>
+                                    <tr>
+                                        <th scope="row">Total</th>
+                                        <td id="distribution-total-percentage">0 %</td>
+                                        <td id="distribution-total-kwh">0</td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section class="distribution-panel distribution-table-panel" aria-labelledby="billing-table-title">
+                        <div class="distribution-panel-heading">
+                            <div>
+                                <h3 id="billing-table-title">Tabela de cobrança <span class="distribution-table-count" id="billing-table-count">(0 imóveis)</span></h3>
+                                <p>Imóveis vinculados com Cobrança solar igual a SIM.</p>
+                            </div>
+                        </div>
+                        <div class="distribution-table-scroll">
+                            <table class="distribution-table billing-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Cliente energia solar</th>
+                                        <th scope="col">kWh/mês estimado</th>
+                                        <th scope="col">R$/mês</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="billing-table-body"></tbody>
+                                <tfoot>
+                                    <tr>
+                                        <th scope="row">Total</th>
+                                        <td id="billing-total-kwh">0</td>
+                                        <td id="billing-total-amount">R$ 0,00</td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="primary-button" id="distribution-download" type="button">Baixar relatório PDF</button>
+            <button class="secondary-button" id="distribution-modal-cancel" type="button">Fechar</button>
+        </div>
     </div>
 </div>
 

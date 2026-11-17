@@ -76,6 +76,7 @@
                     value: (record) => [record.endereco, record.numero, record.cidade, record.estado].filter(Boolean).join(" "),
                 },
                 { key: "geracao_mensal_kwh", label: "Geração mensal", type: "number", value: (record) => record.geracao_mensal_kwh },
+                { key: "preco_venda_kwh", label: "Preço de venda", type: "number", value: (record) => record.preco_venda_kwh },
             ],
         },
         contratos: {
@@ -130,6 +131,31 @@
     const contractStatuses = ["ATIVO", "ENCERRADO"];
     const VIA_CEP_FIELDS = ["endereco", "estado", "cidade", "bairro"];
     const textCollator = new Intl.Collator("pt-BR", { numeric: true, sensitivity: "accent" });
+    const distributionColors = [
+        "#4f63d9",
+        "#36a77d",
+        "#d9a83d",
+        "#d95b67",
+        "#8d6ac8",
+        "#4aa9c8",
+        "#d17a4f",
+        "#6f7f9d",
+    ];
+    // Ajuste manual do tamanho do gráfico e dos rótulos.
+    const distributionChartConfig = {
+        baseSize: 520,
+        radius: 150,
+        labelRadius: 220,
+        labelGap: 20,
+        labelMargin: 3,
+        labelHorizontalGap: 20,
+        chartHorizontalMargin: 15,
+        labelWidthPerCharacter: 4.6,
+        maxWidth: 560,
+        widthInset: 12,
+        wrapperPadding: 5,
+        labelFontSize: 11.5,
+    };
 
     const state = {
         module: "proprietarios",
@@ -147,6 +173,8 @@
         contractPeriods: [],
         periodMode: null,
         editingPeriodId: null,
+        distributionRequestId: 0,
+        distributionRecordId: null,
         sortByModule: {},
         viacep: {
             lastCep: "",
@@ -210,7 +238,29 @@
         elements.modalCancel = document.getElementById("modal-cancel");
         elements.modalSubmit = document.getElementById("modal-submit");
         elements.form = document.getElementById("record-form");
+        elements.distributionModal = document.getElementById("distribution-modal");
+        elements.distributionModalClose = document.getElementById("distribution-modal-close");
+        elements.distributionModalCancel = document.getElementById("distribution-modal-cancel");
+        elements.distributionDownload = document.getElementById("distribution-download");
+        elements.distributionLoading = document.getElementById("distribution-loading");
+        elements.distributionError = document.getElementById("distribution-error");
+        elements.distributionEmpty = document.getElementById("distribution-empty");
+        elements.distributionLayout = document.getElementById("distribution-layout");
+        elements.distributionUnitLabel = document.getElementById("distribution-unit-label");
+        elements.distributionChart = document.getElementById("distribution-chart");
+        elements.distributionChartEmpty = document.getElementById("distribution-chart-empty");
+        elements.distributionLegend = document.getElementById("distribution-legend");
+        elements.distributionTableBody = document.getElementById("distribution-table-body");
+        elements.distributionTableCount = document.getElementById("distribution-table-count");
+        elements.distributionTotalPercentage = document.getElementById("distribution-total-percentage");
+        elements.distributionTotalKwh = document.getElementById("distribution-total-kwh");
+        elements.billingTableBody = document.getElementById("billing-table-body");
+        elements.billingTableCount = document.getElementById("billing-table-count");
+        elements.billingTotalKwh = document.getElementById("billing-total-kwh");
+        elements.billingTotalAmount = document.getElementById("billing-total-amount");
         elements.generationUnitSelect = document.getElementById("unidade-geradora-select");
+        elements.solarClientSelect = document.getElementById("cliente-energia-solar-select");
+        elements.solarClientLabel = document.getElementById("cliente-energia-solar-label");
         elements.energyPercentageField = document.querySelector(
             '[data-form-section="imoveis"] [data-field="percentual_energia"]',
         );
@@ -256,9 +306,17 @@
         elements.contractPeriodHistory.addEventListener("click", handlePeriodAction);
         elements.modalClose.addEventListener("click", closeModal);
         elements.modalCancel.addEventListener("click", closeModal);
+        elements.distributionModalClose.addEventListener("click", closeDistributionModal);
+        elements.distributionModalCancel.addEventListener("click", closeDistributionModal);
+        elements.distributionDownload.addEventListener("click", downloadDistributionPdf);
         elements.modal.addEventListener("click", (event) => {
             if (event.target === elements.modal) {
                 closeModal();
+            }
+        });
+        elements.distributionModal.addEventListener("click", (event) => {
+            if (event.target === elements.distributionModal) {
+                closeDistributionModal();
             }
         });
         elements.clearCepButtons.forEach((button) => button.addEventListener("click", clearCep));
@@ -276,7 +334,9 @@
 
         document.addEventListener("keydown", (event) => {
             if (event.key === "Escape") {
-                if (!elements.modal.hidden) {
+                if (!elements.distributionModal.hidden) {
+                    closeDistributionModal();
+                } else if (!elements.modal.hidden) {
                     closeModal();
                 } else {
                     closeSidebar();
@@ -359,6 +419,17 @@
         }
     }
 
+    async function loadClients() {
+        try {
+            state.clients = await apiFetch("/api/inquilinos-clientes");
+            populateSolarClientSelect();
+        } catch (error) {
+            state.clients = [];
+            populateSolarClientSelect();
+            showToast(error.message, "error");
+        }
+    }
+
     async function loadContractOptions() {
         try {
             const [properties, clients] = await Promise.all([
@@ -368,6 +439,7 @@
             state.properties = properties;
             state.clients = clients;
             populateContractSelects();
+            populateSolarClientSelect();
         } catch (error) {
             showToast(error.message, "error");
         }
@@ -680,6 +752,7 @@
                 <td class="${sortCellClass(sort, "responsavel_nome")}">${escapeHtml(record.responsavel_nome || "—")}</td>
                 <td class="${sortCellClass(sort, "endereco")}">${escapeHtml(location)}</td>
                 <td class="${sortCellClass(sort, "geracao_mensal_kwh")}"><span class="generation-value">${formatGeneration(record.geracao_mensal_kwh)}</span></td>
+                <td class="${sortCellClass(sort, "preco_venda_kwh")}">${formatSalePrice(record.preco_venda_kwh)}</td>
                 <td class="actions-cell">${actionButtons(record.id)}</td>
             </tr>`;
         }
@@ -698,7 +771,10 @@
     }
 
     function actionButtons(id) {
-        return `<button class="row-action" type="button" data-action="view" data-id="${id}">Visualizar</button>
+        const distributionButton = state.module === "energia_solar"
+            ? `<button class="row-action distribution-action" type="button" data-action="distribution" data-id="${id}">Analisar distribuição</button>`
+            : "";
+        return `${distributionButton}<button class="row-action" type="button" data-action="view" data-id="${id}">Visualizar</button>
             <button class="row-action" type="button" data-action="edit" data-id="${id}">Editar</button>
             <button class="row-action delete" type="button" data-action="delete" data-id="${id}">Excluir</button>`;
     }
@@ -720,6 +796,8 @@
             openModal("edit", record);
         } else if (button.dataset.action === "delete") {
             await deleteRecord(id, record);
+        } else if (button.dataset.action === "distribution") {
+            await openDistributionModal(record);
         }
     }
 
@@ -752,7 +830,7 @@
         const modalModule = moduleConfig[moduleName] ? moduleName : state.module;
         state.modalModule = modalModule;
         if (modalModule === "imoveis") {
-            await Promise.all([loadOwners(), loadGenerationUnits()]);
+            await Promise.all([loadOwners(), loadGenerationUnits(), loadClients()]);
         } else if (modalModule === "energia_solar") {
             await loadOwners();
         }
@@ -833,6 +911,325 @@
         setFormDisabled(getActiveSection(), false);
     }
 
+    async function openDistributionModal(record) {
+        const requestId = ++state.distributionRequestId;
+        state.distributionRecordId = record.id;
+        elements.distributionUnitLabel.textContent = generationUnitLabel(record);
+        elements.distributionLoading.hidden = false;
+        elements.distributionError.hidden = true;
+        elements.distributionEmpty.hidden = true;
+        elements.distributionLayout.hidden = true;
+        elements.distributionTableBody.innerHTML = "";
+        elements.distributionChart.innerHTML = "";
+        elements.distributionLegend.innerHTML = "";
+        elements.distributionChartEmpty.hidden = true;
+        elements.billingTableBody.innerHTML = "";
+        resetDistributionTotals();
+        elements.distributionModal.hidden = false;
+        document.body.style.overflow = "hidden";
+
+        try {
+            const data = await apiFetch(`/api/unidades-geracao/${record.id}/distribuicao`);
+            if (requestId !== state.distributionRequestId) {
+                return;
+            }
+            renderDistribution(data);
+        } catch (error) {
+            if (requestId !== state.distributionRequestId) {
+                return;
+            }
+            elements.distributionLoading.hidden = true;
+            elements.distributionError.textContent = error.message;
+            elements.distributionError.hidden = false;
+        }
+    }
+
+    function closeDistributionModal() {
+        state.distributionRequestId += 1;
+        state.distributionRecordId = null;
+        elements.distributionModal.hidden = true;
+        document.body.style.overflow = elements.modal.hidden ? "" : "hidden";
+    }
+
+    function downloadDistributionPdf() {
+        if (!state.distributionRecordId) {
+            return;
+        }
+        const link = document.createElement("a");
+        link.href = `/api/unidades-geracao/${encodeURIComponent(state.distributionRecordId)}/distribuicao/pdf`;
+        link.download = "";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    }
+
+    function renderDistribution(data) {
+        const distributions = Array.isArray(data && data.distribuicoes)
+            ? data.distribuicoes
+            : [];
+        const billings = Array.isArray(data && data.cobrancas)
+            ? data.cobrancas
+            : [];
+        const totals = data && data.totais ? data.totais : {};
+        const distributionTotals = totals.distribuicao || {};
+        const billingTotals = totals.cobranca || {};
+        const unit = data && data.unidade ? data.unidade : null;
+        elements.distributionUnitLabel.textContent = unit && unit.identificacao
+            ? unit.identificacao
+            : "Unidade sem identificação";
+        elements.distributionLoading.hidden = true;
+        elements.distributionError.hidden = true;
+
+        const sortedDistributions = distributions
+            .map((distribution, index) => ({ distribution, index }))
+            .sort((first, second) => {
+                const firstValue = distributionPercentageValue(
+                    first.distribution.percentual_distribuicao,
+                );
+                const secondValue = distributionPercentageValue(
+                    second.distribution.percentual_distribuicao,
+                );
+                return secondValue - firstValue || first.index - second.index;
+            })
+            .map(({ distribution }) => distribution);
+
+        elements.distributionEmpty.hidden = true;
+        elements.distributionLayout.hidden = false;
+        elements.distributionTableCount.textContent = formatPropertyCount(
+            distributionTotals.quantidade_imoveis,
+        );
+        elements.billingTableCount.textContent = formatPropertyCount(
+            billingTotals.quantidade_imoveis,
+        );
+        elements.distributionTotalPercentage.textContent = formatDistributionPercentage(
+            distributionTotals.percentual_distribuicao,
+        );
+        elements.distributionTotalKwh.textContent = formatEstimatedKwh(
+            distributionTotals.kwh_mes_estimado,
+        );
+        elements.billingTotalKwh.textContent = formatEstimatedKwh(
+            billingTotals.kwh_mes_estimado,
+        );
+        elements.billingTotalAmount.textContent = formatCurrency(
+            billingTotals.valor_mensal,
+        );
+        elements.distributionTableBody.innerHTML = renderDistributionRows(
+            sortedDistributions,
+            3,
+            "Nenhum imóvel vinculado com cliente e percentual de energia cadastrados.",
+        );
+        elements.billingTableBody.innerHTML = renderBillingRows(
+            billings,
+            "Nenhum imóvel com Cobrança solar igual a SIM.",
+        );
+        renderDistributionChart(sortedDistributions);
+    }
+
+    function resetDistributionTotals() {
+        elements.distributionTableCount.textContent = formatPropertyCount(0);
+        elements.billingTableCount.textContent = formatPropertyCount(0);
+        elements.distributionTotalPercentage.textContent = formatDistributionPercentage(0);
+        elements.distributionTotalKwh.textContent = formatEstimatedKwh(0);
+        elements.billingTotalKwh.textContent = formatEstimatedKwh(0);
+        elements.billingTotalAmount.textContent = formatCurrency("0.00");
+    }
+
+    function renderDistributionRows(distributions, columnCount, emptyMessage) {
+        if (!distributions.length) {
+            return `<tr class="distribution-table-empty"><td colspan="${columnCount}">${escapeHtml(emptyMessage)}</td></tr>`;
+        }
+        return distributions.map((distribution) => {
+            const clientName = firstClientName(distribution.cliente_nome);
+            const propertyName = distribution.imovel_nome || "Imóvel vinculado";
+            return `<tr>
+                <td title="${escapeHtml(propertyName)}">${escapeHtml(clientName)}</td>
+                <td>${formatDistributionPercentage(distribution.percentual_distribuicao)}</td>
+                <td>${formatEstimatedKwh(distribution.kwh_mes_estimado)}</td>
+            </tr>`;
+        }).join("");
+    }
+
+    function renderBillingRows(billings, emptyMessage) {
+        if (!billings.length) {
+            return `<tr class="distribution-table-empty"><td colspan="3">${escapeHtml(emptyMessage)}</td></tr>`;
+        }
+        return billings.map((billing) => {
+            const clientName = firstClientName(billing.cliente_nome);
+            const propertyName = billing.imovel_nome || "Imóvel vinculado";
+            return `<tr>
+                <td title="${escapeHtml(propertyName)}">${escapeHtml(clientName)}</td>
+                <td>${formatEstimatedKwh(billing.kwh_mes_estimado)}</td>
+                <td>${formatCurrency(billing.valor_mensal)}</td>
+            </tr>`;
+        }).join("");
+    }
+
+    function formatPropertyCount(value) {
+        const number = Number(value);
+        const count = Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : 0;
+        const label = count === 1 ? "imóvel" : "imóveis";
+        return `(${new Intl.NumberFormat("pt-BR").format(count)} ${label})`;
+    }
+
+    function renderDistributionChart(distributions) {
+        const entries = distributions.map((distribution, index) => {
+            return {
+                ...distribution,
+                value: distributionPercentageValue(distribution.percentual_distribuicao),
+                color: distributionColors[index % distributionColors.length],
+                name: firstClientName(distribution.cliente_nome),
+            };
+        });
+        const total = entries.reduce((sum, entry) => sum + entry.value, 0);
+        const legend = entries.map((entry) => `
+            <span class="distribution-legend-item">
+                <span class="distribution-legend-color" style="background:${entry.color}" aria-hidden="true"></span>
+                <span>${escapeHtml(entry.name)} <strong>${formatDistributionPercentage(entry.value)}</strong></span>
+            </span>
+        `).join("");
+        elements.distributionLegend.innerHTML = legend;
+
+        if (total <= 0) {
+            elements.distributionChart.innerHTML = "";
+            elements.distributionChart.hidden = true;
+            elements.distributionChartEmpty.hidden = false;
+            return;
+        }
+
+        elements.distributionChart.hidden = false;
+        elements.distributionChartEmpty.hidden = true;
+        const config = distributionChartConfig;
+        const chartSize = config.baseSize;
+        const radius = config.radius;
+        const labelRadius = config.labelRadius;
+        const labelGap = config.labelGap;
+        const labelMargin = config.labelMargin;
+        const labelHorizontalGap = config.labelHorizontalGap;
+        const chartHorizontalMargin = config.chartHorizontalMargin;
+        const chartWrap = elements.distributionChart.parentElement;
+        chartWrap.style.setProperty("--distribution-chart-padding", `${config.wrapperPadding}px`);
+        elements.distributionChart.style.setProperty("--distribution-chart-width-inset", `${config.widthInset}px`);
+        elements.distributionChart.style.setProperty("--distribution-chart-max-width", `${config.maxWidth}px`);
+        elements.distributionChart.style.setProperty("--distribution-chart-label-size", `${config.labelFontSize}px`);
+        let angle = -Math.PI / 2;
+        const geometries = entries.filter((entry) => entry.value > 0).map((entry) => {
+            const sweep = entry.value / total * Math.PI * 2;
+            const endAngle = angle + sweep;
+            const midAngle = angle + sweep / 2;
+            angle = endAngle;
+            return { entry, sweep, startAngle: endAngle - sweep, endAngle, midAngle };
+        });
+        const estimatedLabelWidth = Math.max(
+            ...geometries.map(({ entry }) => (
+                `${entry.name} · ${formatDistributionPercentage(entry.value)}`.length
+                    * config.labelWidthPerCharacter + 8
+            )),
+            0,
+        );
+        const chartWidth = Math.max(
+            chartSize,
+            (radius + labelHorizontalGap + estimatedLabelWidth + chartHorizontalMargin) * 2,
+        );
+        const center = chartWidth / 2;
+        const leftCount = geometries.filter((geometry) => Math.cos(geometry.midAngle) < 0).length;
+        const rightCount = geometries.length - leftCount;
+        const chartHeight = Math.max(
+            chartSize,
+            Math.max(leftCount, rightCount) * labelGap + labelMargin * 2,
+        );
+        const centerY = chartHeight / 2;
+        const labels = geometries.map((geometry) => {
+            const side = Math.cos(geometry.midAngle) < 0 ? "left" : "right";
+            const targetPoint = polarPoint(center, centerY, labelRadius, geometry.midAngle);
+            return {
+                ...geometry,
+                side,
+                targetY: targetPoint.y,
+                labelY: targetPoint.y,
+            };
+        });
+
+        ["left", "right"].forEach((side) => {
+            const sideLabels = labels
+                .filter((label) => label.side === side)
+                .sort((first, second) => first.targetY - second.targetY);
+            let nextY = labelMargin;
+            sideLabels.forEach((label) => {
+                label.labelY = Math.max(label.targetY, nextY);
+                nextY = label.labelY + labelGap;
+            });
+            const bottomOverflow = nextY - labelGap - (chartHeight - labelMargin);
+            if (bottomOverflow > 0) {
+                sideLabels.forEach((label) => {
+                    label.labelY -= bottomOverflow;
+                });
+            }
+            const topOverflow = labelMargin - (sideLabels[0]?.labelY || labelMargin);
+            if (topOverflow > 0) {
+                sideLabels.forEach((label) => {
+                    label.labelY += topOverflow;
+                });
+            }
+        });
+
+        elements.distributionChart.setAttribute("viewBox", `0 0 ${chartWidth} ${chartHeight}`);
+        const slices = labels.map((labelInfo) => {
+            const { entry, sweep, startAngle, endAngle, midAngle } = labelInfo;
+            const start = polarPoint(center, centerY, radius, startAngle);
+            const end = polarPoint(center, centerY, radius, endAngle);
+            const offset = 6;
+            const offsetX = Math.cos(midAngle) * offset;
+            const offsetY = Math.sin(midAngle) * offset;
+            const largeArc = sweep > Math.PI ? 1 : 0;
+            const path = sweep > Math.PI * 2 - 0.001
+                ? `M ${center} ${centerY - radius} A ${radius} ${radius} 0 1 1 ${center} ${centerY + radius} A ${radius} ${radius} 0 1 1 ${center} ${centerY - radius} Z`
+                : `M ${center} ${centerY} L ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} 1 ${end.x} ${end.y} Z`;
+            const label = `${entry.name} · ${formatDistributionPercentage(entry.value)}`;
+            const isLeft = labelInfo.side === "left";
+            const anchor = isLeft ? "end" : "start";
+            const textX = isLeft
+                ? center - radius - labelHorizontalGap
+                : center + radius + labelHorizontalGap;
+            const elbowX = isLeft ? center - radius - 8 : center + radius + 8;
+            const lineEndX = isLeft ? textX + 4 : textX - 4;
+            const targetPoint = polarPoint(center, centerY, radius + 4, midAngle);
+            return `
+                <path class="distribution-slice" d="${path}" fill="${entry.color}"
+                    transform="translate(${offsetX.toFixed(2)} ${offsetY.toFixed(2)})"
+                    aria-label="${escapeHtml(label)}">
+                    <title>${escapeHtml(label)}</title>
+                </path>
+                <polyline class="distribution-chart-leader" points="${targetPoint.x.toFixed(2)},${targetPoint.y.toFixed(2)} ${elbowX},${labelInfo.labelY.toFixed(2)} ${lineEndX},${labelInfo.labelY.toFixed(2)}" stroke="${entry.color}" />
+                <text class="distribution-chart-label" x="${textX}" y="${labelInfo.labelY.toFixed(2)}" text-anchor="${anchor}" dominant-baseline="middle">${escapeHtml(label)}</text>
+            `;
+        }).join("");
+        elements.distributionChart.innerHTML = slices;
+    }
+
+    function firstClientName(value) {
+        const fullName = String(value || "").trim();
+        return fullName ? fullName.split(/\s+/)[0] : "Cliente não informado";
+    }
+
+    function polarPoint(centerX, centerY, radius, angle) {
+        return {
+            x: centerX + Math.cos(angle) * radius,
+            y: centerY + Math.sin(angle) * radius,
+        };
+    }
+
+    function formatDistributionPercentage(value) {
+        const number = distributionPercentageValue(value);
+        return `${new Intl.NumberFormat("pt-BR", {
+            maximumFractionDigits: 0,
+        }).format(number)} %`;
+    }
+
+    function distributionPercentageValue(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? Math.max(number, 0) : 0;
+    }
+
     function getActiveSection() {
         return document.querySelector(`[data-form-section="${state.modalModule || state.module}"]`);
     }
@@ -887,6 +1284,10 @@
                 field.value = value == null
                     ? (state.modalMode === "view" ? formatCurrency(value) : "")
                     : formatCurrency(value);
+            } else if (field.dataset.mask === "sale-price") {
+                field.value = value == null
+                    ? (state.modalMode === "view" ? formatSalePrice(value) : "")
+                    : state.modalMode === "view" ? formatSalePrice(value) : formatSalePriceInput(value);
             } else {
                 field.value = value == null ? "" : String(value);
             }
@@ -940,14 +1341,37 @@
         select.disabled = false;
     }
 
+    function populateSolarClientSelect() {
+        const select = elements.solarClientSelect;
+        if (!select) {
+            return;
+        }
+        const currentValue = select.value;
+        select.innerHTML = "<option value=\"\">Nenhum</option>";
+        state.clients.forEach((client) => select.add(new Option(client.nome_completo, client.id)));
+        if (currentValue && state.clients.some((client) => String(client.id) === currentValue)) {
+            select.value = currentValue;
+        }
+        select.disabled = state.clients.length === 0;
+    }
+
     function syncEnergyPercentageRequirement() {
         const unitSelect = elements.generationUnitSelect;
+        const solarClientField = elements.solarClientSelect;
+        const solarClientLabel = elements.solarClientLabel;
         const percentageField = elements.energyPercentageField;
         const percentageLabel = elements.energyPercentageLabel;
         if (!unitSelect || !percentageField) {
             return;
         }
         const hasUnit = Boolean(unitSelect.value);
+        if (solarClientField) {
+            solarClientField.required = hasUnit;
+            solarClientField.setAttribute("aria-required", String(hasUnit));
+        }
+        if (solarClientLabel) {
+            solarClientLabel.innerHTML = `Cliente energia solar${hasUnit ? " <b>*</b>" : ""}`;
+        }
         percentageField.required = hasUnit;
         percentageField.setAttribute("aria-required", String(hasUnit));
         if (percentageLabel) {
@@ -1103,6 +1527,15 @@
 
     function validMonthlyGeneration(value) {
         return /^[0-9]+$/.test(String(value || "")) && Number(value) >= 0 && Number(value) <= 9999999;
+    }
+
+    function validSalePrice(value) {
+        let text = String(value || "").trim().replace(/R\$/gi, "").replace(/\s/g, "");
+        if (!text) return true;
+        if (text.includes(",")) {
+            text = text.replace(/\./g, "").replace(",", ".");
+        }
+        return /^\d+(\.\d{0,4})?$/.test(text);
     }
 
     function fillPeriodEditor(period) {
@@ -1432,6 +1865,9 @@
             if (!data.aluguel) {
                 return "Aluguel é obrigatório.";
             }
+            if (data.unidade_geradora_id && !data.cliente_energia_solar_id) {
+                return "Cliente energia solar e obrigatorio quando uma unidade geradora e selecionada.";
+            }
             if (data.unidade_geradora_id && !data.percentual_energia) {
                 return "Percentual de energia é obrigatório quando uma unidade geradora é selecionada.";
             }
@@ -1445,6 +1881,9 @@
             }
             if (data.geracao_mensal_kwh && !validMonthlyGeneration(data.geracao_mensal_kwh)) {
                 return "A estimativa de geração mensal deve ser um inteiro entre 0 e 9.999.999.";
+            }
+            if (data.preco_venda_kwh && !validSalePrice(data.preco_venda_kwh)) {
+                return "O preço de venda deve ser não negativo e ter no máximo 4 casas decimais.";
             }
         }
         if (currentModule === "contratos") {
@@ -1522,6 +1961,7 @@
         if (mask === "phone") input.value = formatPhone(input.value);
         if (mask === "cep") input.value = formatCep(input.value);
         if (mask === "currency") input.value = formatCurrencyInput(input.value);
+        if (mask === "sale-price") input.value = formatSalePriceInput(input.value);
     }
 
     function onlyDigits(value) {
@@ -1557,14 +1997,58 @@
         return formatCurrency(number);
     }
 
+    function formatSalePriceInput(value) {
+        if (value === null || value === undefined || String(value).trim() === "") {
+            return "";
+        }
+
+        let text = String(value).trim().replace(/R\$/gi, "").replace(/\s/g, "");
+        let integerPart = text;
+        let fractionPart = "";
+        let hasSeparator = false;
+        if (text.includes(",")) {
+            [integerPart, fractionPart] = text.split(",", 2);
+            hasSeparator = true;
+        } else if (/^\d+\.\d{1,4}$/.test(text)) {
+            [integerPart, fractionPart] = text.split(".", 2);
+            hasSeparator = true;
+        }
+
+        integerPart = onlyDigits(integerPart) || "0";
+        fractionPart = onlyDigits(fractionPart).slice(0, 4);
+        const groupedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+        return `R$ ${groupedInteger}${hasSeparator ? `,${fractionPart}` : ""}`;
+    }
+
     function formatCurrency(value) {
         if (value === null || value === undefined || value === "" || Number.isNaN(Number(value))) return "—";
         return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value));
     }
 
+    function formatSalePrice(value) {
+        if (value === null || value === undefined || value === "") return "—";
+        const number = Number(value);
+        if (!Number.isFinite(number)) return "—";
+        return new Intl.NumberFormat("pt-BR", {
+            style: "currency",
+            currency: "BRL",
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 4,
+        }).format(number);
+    }
+
     function formatGeneration(value) {
         if (value === null || value === undefined || value === "") return "—";
         return `${new Intl.NumberFormat("pt-BR").format(Number(value))} kWh/mês`;
+    }
+
+    function formatEstimatedKwh(value) {
+        if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value))) {
+            return "—";
+        }
+        return new Intl.NumberFormat("pt-BR", {
+            maximumFractionDigits: 0,
+        }).format(Number(value));
     }
 
     function formatDate(value) {

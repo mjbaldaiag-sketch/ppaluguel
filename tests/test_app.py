@@ -121,9 +121,14 @@ class AppCrudTestCase(unittest.TestCase):
         property_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(imoveis)").fetchall()
         }
+        generation_schema = {
+            row[1]: row[2]
+            for row in connection.execute("PRAGMA table_info(unidades_geracao)").fetchall()
+        }
         connection.close()
         self.assertIn("tipo_operacao", property_columns)
         self.assertNotIn("energia_solar", property_columns)
+        self.assertEqual(generation_schema["preco_venda_kwh"], "INTEGER")
 
     def test_proprietario_crud_and_normalization(self):
         created = self.post_json("/api/proprietarios", self.person_payload())
@@ -300,6 +305,49 @@ class AppCrudTestCase(unittest.TestCase):
             204,
         )
 
+    def test_generation_unit_sale_price_is_exact_across_crud_and_validation(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Owner Sale Price")
+        ).get_json()
+
+        payload = self.generation_unit_payload(owner["id"], "3000")
+        payload["preco_venda_kwh"] = "1,5864"
+        created_response = self.post_json("/api/unidades-geracao", payload)
+        self.assertEqual(created_response.status_code, 201)
+        created = created_response.get_json()
+        self.assertEqual(created["preco_venda_kwh"], "1.5864")
+
+        connection = sqlite3.connect(Path(self.temp_dir.name) / "test.db")
+        stored_price = connection.execute(
+            "SELECT preco_venda_kwh FROM unidades_geracao WHERE id = ?",
+            (created["id"],),
+        ).fetchone()[0]
+        connection.close()
+        self.assertEqual(stored_price, 15864)
+
+        fetched = self.client.get(f"/api/unidades-geracao/{created['id']}")
+        self.assertEqual(fetched.get_json()["preco_venda_kwh"], "1.5864")
+        listed = self.client.get("/api/unidades-geracao").get_json()
+        self.assertEqual(listed[0]["preco_venda_kwh"], "1.5864")
+
+        changed = self.generation_unit_payload(owner["id"], "3000")
+        changed["preco_venda_kwh"] = "1"
+        updated = self.put_json(f"/api/unidades-geracao/{created['id']}", changed)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["preco_venda_kwh"], "1")
+
+        for invalid_price in ("-1", "1,23456", "not-a-price"):
+            invalid = self.generation_unit_payload(owner["id"], "0")
+            invalid["preco_venda_kwh"] = invalid_price
+            response = self.post_json("/api/unidades-geracao", invalid)
+            self.assertEqual(response.status_code, 400, invalid_price)
+
+        empty = self.generation_unit_payload(owner["id"], "0")
+        empty["inscricao_mun"] = "UG-EMPTY-PRICE"
+        empty_response = self.post_json("/api/unidades-geracao", empty)
+        self.assertEqual(empty_response.status_code, 201)
+        self.assertIsNone(empty_response.get_json()["preco_venda_kwh"])
+
     def test_property_generation_unit_link_crud_and_integrity(self):
         owner = self.post_json(
             "/api/proprietarios", self.person_payload("Proprietário do Vínculo")
@@ -308,10 +356,17 @@ class AppCrudTestCase(unittest.TestCase):
             "/api/unidades-geracao",
             self.generation_unit_payload(owner["id"], "3000"),
         ).get_json()
+        client = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente de Energia")
+        ).get_json()
 
         linked_payload = self.property_payload(owner["id"])
         linked_payload.update(
-            {"unidade_geradora_id": unit["id"], "percentual_energia": "35,5"}
+            {
+                "unidade_geradora_id": unit["id"],
+                "percentual_energia": "35,5",
+                "cliente_energia_solar_id": client["id"],
+            }
         )
         created = self.post_json("/api/imoveis", linked_payload)
         self.assertEqual(created.status_code, 201)
@@ -323,6 +378,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(fetched["unidade_geradora_id"], unit["id"])
 
         shared_payload = self.property_payload(owner["id"])
+        shared_payload["cliente_energia_solar_id"] = client["id"]
         shared_payload.update(
             {"apelido": "Outro imóvel solar", "unidade_geradora_id": unit["id"], "percentual_energia": "0"}
         )
@@ -359,6 +415,9 @@ class AppCrudTestCase(unittest.TestCase):
             "/api/unidades-geracao",
             self.generation_unit_payload(owner["id"], "0"),
         ).get_json()
+        client = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente da Unidade")
+        ).get_json()
 
         without_unit = self.property_payload(owner["id"])
         without_unit["unidade_geradora_id"] = ""
@@ -368,11 +427,13 @@ class AppCrudTestCase(unittest.TestCase):
         missing_percentage = self.property_payload(owner["id"])
         missing_percentage["unidade_geradora_id"] = unit["id"]
         missing_percentage["percentual_energia"] = ""
+        missing_percentage["cliente_energia_solar_id"] = client["id"]
         self.assertEqual(self.post_json("/api/imoveis", missing_percentage).status_code, 400)
 
         zero_percentage = self.property_payload(owner["id"])
         zero_percentage["unidade_geradora_id"] = unit["id"]
         zero_percentage["percentual_energia"] = "0"
+        zero_percentage["cliente_energia_solar_id"] = client["id"]
         self.assertEqual(self.post_json("/api/imoveis", zero_percentage).status_code, 201)
 
         invalid_unit = self.property_payload(owner["id"])
@@ -384,6 +445,428 @@ class AppCrudTestCase(unittest.TestCase):
         legacy_payload.pop("unidade_geradora_id")
         legacy_payload["unidade_geradora"] = "UG-LIVRE"
         self.assertEqual(self.post_json("/api/imoveis", legacy_payload).status_code, 400)
+
+    def test_generation_distribution_is_scoped_to_unit_and_keeps_property_rows(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario da Distribuicao")
+        ).get_json()
+        client_one = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Distribuicao Um")
+        ).get_json()
+        client_two = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Distribuicao Dois")
+        ).get_json()
+        unit_one = self.post_json(
+            "/api/unidades-geracao",
+            self.generation_unit_payload(owner["id"], "3000"),
+        ).get_json()
+        unit_two_payload = self.generation_unit_payload(owner["id"], "2500")
+        unit_two_payload["inscricao_mun"] = "UG-002"
+        unit_two = self.post_json("/api/unidades-geracao", unit_two_payload).get_json()
+
+        def create_linked_property(name, unit_id, client_id, percentage):
+            property_data = self.property_payload(owner["id"])
+            property_data.update(
+                {
+                    "apelido": name,
+                    "unidade_geradora_id": unit_id,
+                    "cliente_energia_solar_id": client_id,
+                    "percentual_energia": percentage,
+                }
+            )
+            return self.post_json("/api/imoveis", property_data).get_json()
+
+        first = create_linked_property(
+            "Imovel Distribuicao Um", unit_one["id"], client_one["id"], "35,5"
+        )
+        second = create_linked_property(
+            "Imovel Distribuicao Dois", unit_one["id"], client_one["id"], "0"
+        )
+        third = create_linked_property(
+            "Imovel Distribuicao Tres", unit_one["id"], client_two["id"], "20"
+        )
+        other_unit_property = create_linked_property(
+            "Imovel Outra Unidade", unit_two["id"], client_two["id"], "90"
+        )
+        unrelated = self.property_payload(owner["id"])
+        unrelated["apelido"] = "Imovel Sem Unidade"
+        unrelated["percentual_energia"] = "15"
+        unrelated_property = self.post_json("/api/imoveis", unrelated).get_json()
+
+        response = self.client.get(
+            f"/api/unidades-geracao/{unit_one['id']}/distribuicao",
+            query_string={"proprietario_id": "999", "adm_propriedade": "maybe"},
+        )
+        self.assertEqual(response.status_code, 200)
+        distribution = response.get_json()
+        self.assertEqual(
+            distribution["unidade"],
+            {"id": unit_one["id"], "identificacao": "UG-001"},
+        )
+        self.assertEqual(
+            [item["imovel_id"] for item in distribution["distribuicoes"]],
+            [second["id"], third["id"], first["id"]],
+        )
+        self.assertEqual(
+            [item["cliente_id"] for item in distribution["distribuicoes"]],
+            [client_one["id"], client_two["id"], client_one["id"]],
+        )
+        self.assertEqual(
+            [item["percentual_distribuicao"] for item in distribution["distribuicoes"]],
+            [0.0, 20.0, 35.5],
+        )
+        self.assertEqual(
+            [item["kwh_mes_estimado"] for item in distribution["distribuicoes"]],
+            [0, 600, 1065],
+        )
+        self.assertEqual(
+            distribution["totais"]["distribuicao"],
+            {
+                "quantidade_imoveis": 3,
+                "percentual_distribuicao": 55.5,
+                "kwh_mes_estimado": 1665,
+            },
+        )
+        self.assertEqual(
+            [item["imovel_id"] for item in distribution["cobrancas"]],
+            [second["id"], third["id"], first["id"]],
+        )
+        self.assertEqual(
+            distribution["totais"]["cobranca"],
+            {
+                "quantidade_imoveis": 3,
+                "kwh_mes_estimado": 1665,
+                "valor_mensal": None,
+            },
+        )
+        self.assertNotIn(
+            other_unit_property["id"],
+            [item["imovel_id"] for item in distribution["distribuicoes"]],
+        )
+        self.assertNotIn(
+            unrelated_property["id"],
+            [item["imovel_id"] for item in distribution["distribuicoes"]],
+        )
+
+        empty_unit_payload = self.generation_unit_payload(owner["id"], "100")
+        empty_unit_payload["inscricao_mun"] = "UG-EMPTY"
+        empty_unit = self.post_json(
+            "/api/unidades-geracao", empty_unit_payload
+        ).get_json()
+        empty_response = self.client.get(
+            f"/api/unidades-geracao/{empty_unit['id']}/distribuicao"
+        )
+        self.assertEqual(empty_response.status_code, 200)
+        self.assertEqual(empty_response.get_json()["distribuicoes"], [])
+        self.assertEqual(empty_response.get_json()["cobrancas"], [])
+        self.assertEqual(
+            empty_response.get_json()["totais"],
+            {
+                "distribuicao": {
+                    "quantidade_imoveis": 0,
+                    "percentual_distribuicao": 0.0,
+                    "kwh_mes_estimado": 0,
+                },
+                "cobranca": {
+                    "quantidade_imoveis": 0,
+                    "kwh_mes_estimado": 0,
+                    "valor_mensal": "0.00",
+                },
+            },
+        )
+        self.assertEqual(
+            self.client.get("/api/unidades-geracao/999/distribuicao").status_code,
+            404,
+        )
+
+    def test_generation_distribution_billing_filters_charge_flag_and_rounds_money(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario da Cobranca")
+        ).get_json()
+        client_one = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Cobranca Um")
+        ).get_json()
+        client_two = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Cobranca Dois")
+        ).get_json()
+        unit_payload = self.generation_unit_payload(owner["id"], "3000")
+        unit_payload["preco_venda_kwh"] = "1,5864"
+        unit = self.post_json("/api/unidades-geracao", unit_payload).get_json()
+
+        def create_property(name, client_id, percentage, charge):
+            property_data = self.property_payload(owner["id"])
+            property_data.update(
+                {
+                    "apelido": name,
+                    "unidade_geradora_id": unit["id"],
+                    "cliente_energia_solar_id": client_id,
+                    "percentual_energia": percentage,
+                    "adm_propriedade": str(charge),
+                }
+            )
+            return self.post_json("/api/imoveis", property_data).get_json()
+
+        charge_one = create_property(
+            "Imovel Cobranca Um", client_one["id"], "35,5", 1
+        )
+        no_charge = create_property(
+            "Imovel Sem Cobranca", client_two["id"], "20", 0
+        )
+        charge_two = create_property(
+            "Imovel Cobranca Dois", client_two["id"], "10", 1
+        )
+
+        data = self.client.get(
+            f"/api/unidades-geracao/{unit['id']}/distribuicao"
+        ).get_json()
+        self.assertEqual(
+            [item["imovel_id"] for item in data["distribuicoes"]],
+            [charge_two["id"], charge_one["id"], no_charge["id"]],
+        )
+        self.assertEqual(
+            [item["imovel_id"] for item in data["cobrancas"]],
+            [charge_two["id"], charge_one["id"]],
+        )
+        self.assertEqual(
+            [item["valor_mensal"] for item in data["cobrancas"]],
+            ["475.92", "1689.52"],
+        )
+        self.assertEqual(
+            data["totais"],
+            {
+                "distribuicao": {
+                    "quantidade_imoveis": 3,
+                    "percentual_distribuicao": 65.5,
+                    "kwh_mes_estimado": 1965,
+                },
+                "cobranca": {
+                    "quantidade_imoveis": 2,
+                    "kwh_mes_estimado": 1365,
+                    "valor_mensal": "2165.44",
+                },
+            },
+        )
+        pdf_response = self.client.get(
+            f"/api/unidades-geracao/{unit['id']}/distribuicao/pdf"
+        )
+        self.assertEqual(pdf_response.status_code, 200)
+        self.assertEqual(pdf_response.mimetype, "application/pdf")
+        self.assertTrue(pdf_response.data.startswith(b"%PDF-"))
+        self.assertIn("attachment", pdf_response.headers["Content-Disposition"])
+
+        rounded_unit_payload = self.generation_unit_payload(owner["id"], "1")
+        rounded_unit_payload["inscricao_mun"] = "UG-MONEY-ROUND"
+        rounded_unit_payload["preco_venda_kwh"] = "1,005"
+        rounded_unit = self.post_json(
+            "/api/unidades-geracao", rounded_unit_payload
+        ).get_json()
+        rounded_property = self.property_payload(owner["id"])
+        rounded_property.update(
+            {
+                "apelido": "Imovel Arredondamento Monetario",
+                "unidade_geradora_id": rounded_unit["id"],
+                "cliente_energia_solar_id": client_one["id"],
+                "percentual_energia": "100",
+                "adm_propriedade": "1",
+            }
+        )
+        self.post_json("/api/imoveis", rounded_property)
+        rounded_data = self.client.get(
+            f"/api/unidades-geracao/{rounded_unit['id']}/distribuicao"
+        ).get_json()
+        self.assertEqual(rounded_data["cobrancas"][0]["valor_mensal"], "1.01")
+        self.assertEqual(
+            rounded_data["totais"]["cobranca"]["valor_mensal"], "1.01"
+        )
+
+    def test_generation_distribution_estimate_rounds_half_up_and_handles_missing_generation(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario do Arredondamento")
+        ).get_json()
+        client = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente do Arredondamento")
+        ).get_json()
+
+        rounded_unit = self.generation_unit_payload(owner["id"], "5")
+        rounded_unit["inscricao_mun"] = "UG-ROUND"
+        rounded_unit = self.post_json("/api/unidades-geracao", rounded_unit).get_json()
+        rounded_property = self.property_payload(owner["id"])
+        rounded_property.update(
+            {
+                "apelido": "Imovel Arredondamento",
+                "unidade_geradora_id": rounded_unit["id"],
+                "cliente_energia_solar_id": client["id"],
+                "percentual_energia": "10",
+            }
+        )
+        self.post_json("/api/imoveis", rounded_property)
+
+        rounded_distribution = self.client.get(
+            f"/api/unidades-geracao/{rounded_unit['id']}/distribuicao"
+        ).get_json()
+        self.assertEqual(
+            rounded_distribution["distribuicoes"][0]["kwh_mes_estimado"], 1
+        )
+
+        missing_unit = self.generation_unit_payload(owner["id"], "")
+        missing_unit["inscricao_mun"] = "UG-MISSING"
+        missing_unit = self.post_json("/api/unidades-geracao", missing_unit).get_json()
+        missing_property = self.property_payload(owner["id"])
+        missing_property.update(
+            {
+                "apelido": "Imovel Geracao Ausente",
+                "unidade_geradora_id": missing_unit["id"],
+                "cliente_energia_solar_id": client["id"],
+                "percentual_energia": "35,5",
+            }
+        )
+        self.post_json("/api/imoveis", missing_property)
+
+        missing_distribution = self.client.get(
+            f"/api/unidades-geracao/{missing_unit['id']}/distribuicao"
+        ).get_json()
+        self.assertIsNone(
+            missing_distribution["distribuicoes"][0]["kwh_mes_estimado"]
+        )
+        self.assertIsNone(missing_distribution["cobrancas"][0]["valor_mensal"])
+        self.assertIsNone(
+            missing_distribution["totais"]["cobranca"]["valor_mensal"]
+        )
+
+    def test_distribution_analysis_markup_and_frontend_hooks(self):
+        page = self.client.get("/").get_data(as_text=True)
+        source = (
+            Path(__file__).resolve().parents[1] / "static" / "js" / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn('id="distribution-modal"', page)
+        self.assertIn('id="distribution-chart"', page)
+        self.assertIn('id="distribution-table-body"', page)
+        self.assertIn('id="distribution-table-count"', page)
+        self.assertIn('id="distribution-total-percentage"', page)
+        self.assertIn('id="distribution-total-kwh"', page)
+        self.assertIn('id="billing-table-body"', page)
+        self.assertIn('id="billing-table-count"', page)
+        self.assertIn('id="billing-total-kwh"', page)
+        self.assertIn('id="billing-total-amount"', page)
+        self.assertIn('id="distribution-download"', page)
+        self.assertIn("Baixar relatório PDF", page)
+        self.assertIn("Tabela de cobrança", page)
+        self.assertIn("R$/mês", page)
+        self.assertIn("<tfoot>", page)
+        self.assertIn("Cliente energia solar", page)
+        self.assertIn("Percentual de distribuição (%)", page)
+        self.assertIn("kWh/mês estimado", page)
+        self.assertIn('data-action="distribution"', source)
+        self.assertIn("/api/unidades-geracao/${record.id}/distribuicao", source)
+        self.assertIn("distribution-slice", source)
+        self.assertIn("formatDistributionPercentage", source)
+        self.assertIn("kwh_mes_estimado", source)
+        self.assertIn("formatEstimatedKwh", source)
+        self.assertIn("function renderBillingRows", source)
+        self.assertIn("data.cobrancas", source)
+        self.assertIn("totals.cobranca", source)
+        self.assertIn("formatCurrency(billing.valor_mensal)", source)
+        self.assertIn("function formatPropertyCount", source)
+        self.assertIn("function downloadDistributionPdf", source)
+        self.assertIn("/distribuicao/pdf", source)
+        self.assertIn("function firstClientName", source)
+        self.assertIn("firstClientName(distribution.cliente_nome)", source)
+        self.assertIn("distributionRequestId", source)
+        self.assertNotIn("\ufffd", page)
+        self.assertNotIn("\ufffd", source)
+
+    def test_property_solar_client_relationship_validation_and_crud(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario do Cliente Solar")
+        ).get_json()
+        client = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Solar")
+        ).get_json()
+        unit = self.post_json(
+            "/api/unidades-geracao",
+            self.generation_unit_payload(owner["id"], "1200"),
+        ).get_json()
+
+        without_unit = self.property_payload(owner["id"])
+        without_unit["percentual_energia"] = ""
+        created_without_client = self.post_json("/api/imoveis", without_unit)
+        self.assertEqual(created_without_client.status_code, 201)
+        self.assertIsNone(created_without_client.get_json()["cliente_energia_solar_id"])
+
+        with_client_without_unit = self.property_payload(owner["id"])
+        with_client_without_unit["apelido"] = "Imovel com Cliente Solar"
+        with_client_without_unit["cliente_energia_solar_id"] = client["id"]
+        with_client_without_unit["percentual_energia"] = ""
+        created_without_unit = self.post_json("/api/imoveis", with_client_without_unit)
+        self.assertEqual(created_without_unit.status_code, 201)
+        self.assertEqual(
+            created_without_unit.get_json()["cliente_energia_solar_id"], client["id"]
+        )
+
+        missing_client = self.property_payload(owner["id"])
+        missing_client["unidade_geradora_id"] = unit["id"]
+        missing_client["percentual_energia"] = "25"
+        self.assertEqual(self.post_json("/api/imoveis", missing_client).status_code, 400)
+
+        invalid_client = dict(missing_client)
+        invalid_client["cliente_energia_solar_id"] = 999
+        self.assertEqual(self.post_json("/api/imoveis", invalid_client).status_code, 400)
+
+        text_client = dict(without_unit)
+        text_client["cliente_energia_solar_id"] = client["nome_completo"]
+        self.assertEqual(self.post_json("/api/imoveis", text_client).status_code, 400)
+
+        linked_payload = self.property_payload(owner["id"])
+        linked_payload.update(
+            {
+                "apelido": "Imovel Vinculado ao Cliente",
+                "unidade_geradora_id": unit["id"],
+                "percentual_energia": "25",
+                "cliente_energia_solar_id": client["id"],
+            }
+        )
+        linked = self.post_json("/api/imoveis", linked_payload)
+        self.assertEqual(linked.status_code, 201)
+        property_id = linked.get_json()["id"]
+        self.assertEqual(
+            self.client.get(f"/api/imoveis/{property_id}").get_json()["cliente_energia_solar_id"],
+            client["id"],
+        )
+
+        missing_on_update = dict(linked_payload)
+        missing_on_update["cliente_energia_solar_id"] = ""
+        self.assertEqual(self.put_json(f"/api/imoveis/{property_id}", missing_on_update).status_code, 400)
+
+        cleared = dict(linked_payload)
+        cleared["unidade_geradora_id"] = ""
+        cleared["cliente_energia_solar_id"] = ""
+        cleared["percentual_energia"] = ""
+        updated = self.put_json(f"/api/imoveis/{property_id}", cleared)
+        self.assertEqual(updated.status_code, 200)
+        self.assertIsNone(updated.get_json()["cliente_energia_solar_id"])
+
+    def test_solar_client_delete_is_blocked_while_linked_to_property(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario do Vinculo Solar")
+        ).get_json()
+        client = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Protegido")
+        ).get_json()
+        property_payload = self.property_payload(owner["id"])
+        property_payload["cliente_energia_solar_id"] = client["id"]
+        property_payload["percentual_energia"] = ""
+        property_data = self.post_json("/api/imoveis", property_payload).get_json()
+
+        blocked = self.client.delete(f"/api/inquilinos-clientes/{client['id']}")
+        self.assertEqual(blocked.status_code, 409)
+
+        cleared = self.property_payload(owner["id"])
+        cleared["percentual_energia"] = ""
+        self.assertEqual(
+            self.put_json(f"/api/imoveis/{property_data['id']}", cleared).status_code,
+            200,
+        )
+        self.assertEqual(self.client.delete(f"/api/inquilinos-clientes/{client['id']}").status_code, 204)
 
     def test_generation_unit_validation_and_optional_generation(self):
         owner = self.post_json(
@@ -723,6 +1206,9 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('data-field="geracao_mensal_kwh"', page)
         self.assertIn('data-field="numero_instalacao"', page)
         self.assertIn('data-field="numero_unidade_geradora_consumidora"', page)
+        self.assertIn('data-field="preco_venda_kwh"', page)
+        self.assertIn('data-mask="sale-price"', page)
+        self.assertIn("Preço de venda (R$/kWh)", page)
         self.assertIn('Est. de geração mensal (kWh/mês)', page)
         self.assertIn('class="form-field generation-field"', page)
         self.assertIn("Limpar CEP", page)
@@ -730,6 +1216,12 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('data-field="tipo_imovel"', page)
         self.assertIn('data-field="tipo_operacao"', page)
         self.assertIn('data-field="unidade_geradora_id"', page)
+        self.assertIn('data-field="cliente_energia_solar_id"', page)
+        self.assertIn("Cliente energia solar", page)
+        self.assertLess(
+            page.index('data-field="unidade_geradora_id"'),
+            page.index('data-field="cliente_energia_solar_id"'),
+        )
         self.assertIn('<option value="">Nenhuma</option>', page)
         self.assertNotIn('data-field="unidade_geradora"', page)
         self.assertIn('value="ALUGUEL"', page)
@@ -792,7 +1284,13 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn("/api/unidades-geracao", source)
         self.assertIn("syncEnergyPercentageRequirement", source)
         self.assertIn("unidade_geradora_id", source)
+        self.assertIn("cliente_energia_solar_id", source)
+        self.assertIn("/api/inquilinos-clientes", source)
+        self.assertIn("populateSolarClientSelect", source)
         self.assertIn("generationUnitLabel", source)
+        self.assertIn('key: "preco_venda_kwh"', source)
+        self.assertIn('function formatSalePriceInput(value)', source)
+        self.assertIn('function validSalePrice(value)', source)
         energy_config = source.split("energia_solar:", 1)[1].split("contratos:", 1)[0]
         self.assertIn('label: "Unidade de geração"', energy_config)
         self.assertNotIn('label: "Identificação municipal"', energy_config)
@@ -1292,6 +1790,84 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(columns_after_retry.count("status"), 1)
         self.assertEqual(rows_after_retry, [(1, "ATIVO")])
 
+    def test_existing_database_migrates_solar_client_fk_without_data_loss(self):
+        database = Path(self.temp_dir.name) / "legacy-solar-client.db"
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE proprietario (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            INSERT INTO proprietario (nome_completo) VALUES ('PROPRIETARIO LEGADO');
+            CREATE TABLE inquilinos_clientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            INSERT INTO inquilinos_clientes (nome_completo) VALUES ('CLIENTE LEGADO');
+            CREATE TABLE imoveis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                apelido TEXT NOT NULL,
+                tipo_imovel TEXT,
+                responsavel INTEGER NOT NULL,
+                cep TEXT,
+                endereco TEXT,
+                estado TEXT,
+                cidade TEXT,
+                bairro TEXT,
+                numero TEXT,
+                complemento TEXT,
+                inscricao_mun TEXT,
+                aluguel REAL NOT NULL DEFAULT 0,
+                numero_energia TEXT,
+                numero_agua TEXT,
+                adm_propriedade INTEGER NOT NULL DEFAULT 0,
+                imobiliaria INTEGER NOT NULL DEFAULT 0,
+                tipo_operacao TEXT,
+                unidade_geradora_legada TEXT,
+                percentual_energia REAL
+            );
+            INSERT INTO imoveis
+                (apelido, tipo_imovel, responsavel, cidade, aluguel, unidade_geradora_legada)
+            VALUES ('IMOVEL LEGADO', 'CASA', 1, 'CIDADE LEGADA', 1200, 'UG-LEGACY');
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        migrated_app = create_app({"TESTING": True, "DATABASE": str(database)})
+        migrated_client = migrated_app.test_client()
+        connection = sqlite3.connect(database)
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(imoveis)").fetchall()
+        }
+        foreign_keys = connection.execute("PRAGMA foreign_key_list(imoveis)").fetchall()
+        preserved = connection.execute(
+            "SELECT apelido, unidade_geradora_legada, cliente_energia_solar_id "
+            "FROM imoveis WHERE id = 1"
+        ).fetchone()
+        connection.close()
+
+        self.assertIn("cliente_energia_solar_id", columns)
+        self.assertTrue(
+            any(row[2] == "inquilinos_clientes" and row[6] == "RESTRICT" for row in foreign_keys)
+        )
+        self.assertEqual(preserved, ("IMOVEL LEGADO", "UG-LEGACY", None))
+        property_data = migrated_client.get("/api/imoveis/1").get_json()
+        self.assertIsNone(property_data["cliente_energia_solar_id"])
+
     def test_existing_database_migrates_endereco_without_recreating_data(self):
         database = Path(self.temp_dir.name) / "legacy.db"
         connection = sqlite3.connect(database)
@@ -1598,6 +2174,7 @@ class AppCrudTestCase(unittest.TestCase):
             {
                 "numero_instalacao",
                 "numero_unidade_geradora_consumidora",
+                "preco_venda_kwh",
             }.issubset(columns)
         )
         self.assertEqual(
@@ -1610,6 +2187,17 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIsNone(
             response.get_json()["numero_unidade_geradora_consumidora"]
         )
+        self.assertIsNone(response.get_json()["preco_venda_kwh"])
+
+        create_app({"TESTING": True, "DATABASE": str(database)})
+        connection = sqlite3.connect(database)
+        self.assertEqual(
+            [row[1] for row in connection.execute("PRAGMA table_info(unidades_geracao)").fetchall()].count(
+                "preco_venda_kwh"
+            ),
+            1,
+        )
+        connection.close()
 
     def test_legacy_generation_text_migrates_only_unique_matches(self):
         database = Path(self.temp_dir.name) / "legacy-generation-links.db"
