@@ -51,6 +51,33 @@
                 { key: "tipo_operacao", label: "Tipo operação", type: "text", value: (record) => record.tipo_operacao },
             ],
         },
+        energia_solar: {
+            endpoint: "/api/unidades-geracao",
+            title: "Energia solar",
+            singular: "unidade de geração",
+            newLabel: "Nova unidade de geração",
+            viewLabel: "Detalhes da unidade de geração",
+            feminine: true,
+            description: "Gerencie suas unidades de geração e a estimativa mensal de energia.",
+            empty: "Ainda não há unidades de geração cadastradas.",
+            emptyDescription: "Cadastre a primeira unidade de geração para começar.",
+            columns: [
+                {
+                    key: "inscricao_mun",
+                    label: "Unidade de geração",
+                    type: "text",
+                    value: (record) => record.inscricao_mun || `Unidade #${record.id}`,
+                },
+                { key: "responsavel_nome", label: "Responsável", type: "text", value: (record) => record.responsavel_nome },
+                {
+                    key: "endereco",
+                    label: "Endereço",
+                    type: "text",
+                    value: (record) => [record.endereco, record.numero, record.cidade, record.estado].filter(Boolean).join(" "),
+                },
+                { key: "geracao_mensal_kwh", label: "Geração mensal", type: "number", value: (record) => record.geracao_mensal_kwh },
+            ],
+        },
         contratos: {
             endpoint: "/api/contratos",
             title: "Contratos",
@@ -112,9 +139,14 @@
         modalModule: "proprietarios",
         moduleRequestId: 0,
         ownerFilterId: "",
+        solarFilterValue: "",
         owners: [],
+        generationUnits: [],
         properties: [],
         clients: [],
+        contractPeriods: [],
+        periodMode: null,
+        editingPeriodId: null,
         sortByModule: {},
         viacep: {
             lastCep: "",
@@ -178,7 +210,20 @@
         elements.modalCancel = document.getElementById("modal-cancel");
         elements.modalSubmit = document.getElementById("modal-submit");
         elements.form = document.getElementById("record-form");
-        elements.clearCepButton = document.getElementById("clear-cep-button");
+        elements.generationUnitSelect = document.getElementById("unidade-geradora-select");
+        elements.energyPercentageField = document.querySelector(
+            '[data-form-section="imoveis"] [data-field="percentual_energia"]',
+        );
+        elements.energyPercentageLabel = document.getElementById("percentual-energia-label");
+        elements.solarFilter = document.getElementById("solar-filter");
+        elements.contractPeriodPanel = document.getElementById("contract-period-panel");
+        elements.contractPeriodHistory = document.getElementById("contract-period-history");
+        elements.newContractPeriod = document.getElementById("new-contract-period");
+        elements.contractPeriodEditor = document.getElementById("contract-period-editor");
+        elements.contractPeriodEditorTitle = document.getElementById("contract-period-editor-title");
+        elements.contractPeriodEditorDescription = document.getElementById("contract-period-editor-description");
+        elements.cancelContractPeriod = document.getElementById("cancel-contract-period");
+        elements.clearCepButtons = document.querySelectorAll(".clear-cep-button");
         elements.toastRegion = document.getElementById("toast-region");
     }
 
@@ -200,7 +245,15 @@
             state.ownerFilterId = elements.ownerFilter.value;
             refreshCurrentModule();
         });
+        elements.solarFilter.addEventListener("change", () => {
+            state.solarFilterValue = elements.solarFilter.value;
+            refreshCurrentModule();
+        });
         elements.form.addEventListener("submit", handleFormSubmit);
+        elements.generationUnitSelect.addEventListener("change", syncEnergyPercentageRequirement);
+        elements.newContractPeriod.addEventListener("click", () => openPeriodEditor("create"));
+        elements.cancelContractPeriod.addEventListener("click", closePeriodEditor);
+        elements.contractPeriodHistory.addEventListener("click", handlePeriodAction);
         elements.modalClose.addEventListener("click", closeModal);
         elements.modalCancel.addEventListener("click", closeModal);
         elements.modal.addEventListener("click", (event) => {
@@ -208,7 +261,7 @@
                 closeModal();
             }
         });
-        elements.clearCepButton.addEventListener("click", clearCep);
+        elements.clearCepButtons.forEach((button) => button.addEventListener("click", clearCep));
         elements.recordsHead.addEventListener("click", handleSortHeaderClick);
         elements.recordsBody.addEventListener("click", handleTableAction);
         elements.activeContractsHead.addEventListener("click", handleSortHeaderClick);
@@ -250,6 +303,10 @@
             if (startDate) {
                 startDate.addEventListener("change", () => updateContractDateConstraints(contractSection));
             }
+            const periodStartDate = contractSection.querySelector('[data-period-field="data_inicio"]');
+            if (periodStartDate) {
+                periodStartDate.addEventListener("change", () => updatePeriodDateConstraints());
+            }
         }
         setTableMode();
     }
@@ -259,17 +316,21 @@
             maritalStatuses.forEach(([value, label]) => select.add(new Option(label, value)));
         });
 
-        const stateSelect = document.querySelector('[data-form-section="imoveis"] [data-field="estado"]');
-        states.forEach(([abbreviation, name]) => stateSelect.add(new Option(`${abbreviation} — ${name}`, abbreviation)));
+        document.querySelectorAll(
+            '[data-form-section="imoveis"] [data-field="estado"], [data-form-section="energia_solar"] [data-field="estado"]',
+        ).forEach((stateSelect) => {
+            states.forEach(([abbreviation, name]) => stateSelect.add(new Option(`${abbreviation} — ${name}`, abbreviation)));
+        });
     }
 
     async function loadDashboard() {
         try {
-            const data = await apiFetch(withOwnerFilter("/api/dashboard", "dashboard"));
+            const data = await apiFetch(withPropertyFilters("/api/dashboard", "dashboard"));
             const counts = data.counts || {};
             document.getElementById("count-proprietarios").textContent = counts.proprietarios || 0;
             document.getElementById("count-inquilinos").textContent = counts.inquilinos_clientes || 0;
             document.getElementById("count-imoveis-locacao").textContent = counts.imoveis_locacao || 0;
+            document.getElementById("count-imoveis-cobranca-solar").textContent = counts.imoveis_cobranca_solar || 0;
             document.getElementById("count-imoveis-energia-solar").textContent = counts.imoveis_energia_solar || 0;
             document.getElementById("count-contratos").textContent = counts.contratos || 0;
         } catch (error) {
@@ -287,10 +348,21 @@
         }
     }
 
+    async function loadGenerationUnits() {
+        try {
+            state.generationUnits = await apiFetch("/api/unidades-geracao");
+            populateGenerationUnitSelect();
+        } catch (error) {
+            state.generationUnits = [];
+            populateGenerationUnitSelect();
+            showToast(error.message, "error");
+        }
+    }
+
     async function loadContractOptions() {
         try {
             const [properties, clients] = await Promise.all([
-                apiFetch(withOwnerFilter("/api/imoveis", "imoveis")),
+                apiFetch(withPropertyFilters("/api/imoveis", "imoveis")),
                 apiFetch("/api/inquilinos-clientes"),
             ]);
             state.properties = properties;
@@ -310,7 +382,7 @@
         const requestId = ++state.moduleRequestId;
         setLoading(true);
         try {
-            const records = await apiFetch(withOwnerFilter(config.endpoint, moduleName));
+            const records = await apiFetch(withPropertyFilters(config.endpoint, moduleName));
             if (requestId !== state.moduleRequestId || state.module !== moduleName) {
                 return;
             }
@@ -332,7 +404,7 @@
 
     async function refreshCurrentModule() {
         await Promise.all([loadDashboard(), loadModule(state.module)]);
-        if (state.module === "imoveis") {
+        if (state.module === "imoveis" || state.module === "energia_solar") {
             await loadOwners();
         }
         if (state.module === "contratos") {
@@ -356,7 +428,7 @@
         elements.breadcrumbModule.textContent = config.title;
         elements.moduleTitle.textContent = config.title;
         elements.moduleDescription.textContent = config.description;
-        elements.newRecordLabel.textContent = `Novo ${config.singular}`;
+        elements.newRecordLabel.textContent = config.newLabel || `Novo ${config.singular}`;
         setTableMode();
         loadModule(moduleName);
     }
@@ -367,13 +439,23 @@
         elements.contractsTables.hidden = !isContracts;
     }
 
-    function withOwnerFilter(endpoint, context) {
-        const filteredContexts = ["dashboard", "imoveis", "contratos"];
-        if (!state.ownerFilterId || !filteredContexts.includes(context)) {
+    function withPropertyFilters(endpoint, context) {
+        const filteredContexts = ["dashboard", "imoveis", "contratos", "energia_solar"];
+        if (!filteredContexts.includes(context)) {
+            return endpoint;
+        }
+        const params = [];
+        if (state.ownerFilterId) {
+            params.push(`proprietario_id=${encodeURIComponent(state.ownerFilterId)}`);
+        }
+        if (state.solarFilterValue && ["dashboard", "imoveis", "contratos"].includes(context)) {
+            params.push(`adm_propriedade=${encodeURIComponent(state.solarFilterValue)}`);
+        }
+        if (!params.length) {
             return endpoint;
         }
         const separator = endpoint.includes("?") ? "&" : "?";
-        return `${endpoint}${separator}proprietario_id=${encodeURIComponent(state.ownerFilterId)}`;
+        return `${endpoint}${separator}${params.join("&")}`;
     }
 
     function setLoading(isLoading) {
@@ -585,6 +667,23 @@
             </tr>`;
         }
 
+        if (state.module === "energia_solar") {
+            const location = [
+                record.endereco,
+                record.numero ? `Nº ${record.numero}` : "",
+                record.cidade,
+                record.estado,
+            ].filter(Boolean).join(" · ") || "Endereço não informado";
+            const identification = record.inscricao_mun || `Unidade #${record.id}`;
+            return `<tr>
+                <td class="${sortCellClass(sort, "inscricao_mun")}"><div class="property-cell"><span class="row-avatar generation">☼</span><span>${escapeHtml(identification)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
+                <td class="${sortCellClass(sort, "responsavel_nome")}">${escapeHtml(record.responsavel_nome || "—")}</td>
+                <td class="${sortCellClass(sort, "endereco")}">${escapeHtml(location)}</td>
+                <td class="${sortCellClass(sort, "geracao_mensal_kwh")}"><span class="generation-value">${formatGeneration(record.geracao_mensal_kwh)}</span></td>
+                <td class="actions-cell">${actionButtons(record.id)}</td>
+            </tr>`;
+        }
+
         return `<tr>
             <td class="${sortCellClass(sort, "nome_completo")}"><div class="person-cell"><span class="row-avatar">${initials(record.nome_completo)}</span><span>${escapeHtml(record.nome_completo)}<small class="subtle-text">Código #${record.id}</small></span></div></td>
             <td class="${sortCellClass(sort, "cpf")}">${formatCpf(record.cpf)}</td>
@@ -627,16 +726,19 @@
     async function deleteRecord(id, record) {
         const description = state.module === "imoveis"
             ? record.apelido
-            : state.module === "contratos"
-                ? `${record.imovel_nome} / ${record.inquilino_nome}`
-                : record.nome_completo;
+            : state.module === "energia_solar"
+                ? record.inscricao_mun || `Unidade #${record.id}`
+                : state.module === "contratos"
+                    ? `${record.imovel_nome} / ${record.inquilino_nome}`
+                    : record.nome_completo;
         if (!window.confirm(`Excluir “${description}”? Esta ação não poderá ser desfeita.`)) {
             return;
         }
 
         try {
             await apiFetch(`${moduleConfig[state.module].endpoint}/${id}`, { method: "DELETE" });
-            showToast(`${moduleConfig[state.module].singular} excluído com sucesso.`);
+            const deletedWord = moduleConfig[state.module].feminine ? "excluída" : "excluído";
+            showToast(`${moduleConfig[state.module].singular} ${deletedWord} com sucesso.`);
             await refreshCurrentModule();
             if (state.module === "proprietarios") {
                 await loadOwners();
@@ -650,14 +752,31 @@
         const modalModule = moduleConfig[moduleName] ? moduleName : state.module;
         state.modalModule = modalModule;
         if (modalModule === "imoveis") {
+            await Promise.all([loadOwners(), loadGenerationUnits()]);
+        } else if (modalModule === "energia_solar") {
             await loadOwners();
         }
         if (modalModule === "contratos") {
             await loadContractOptions();
         }
 
+        let modalRecord = record;
+        if (modalModule === "contratos" && record && mode !== "create") {
+            try {
+                modalRecord = await apiFetch(`${moduleConfig[modalModule].endpoint}/${record.id}`);
+            } catch (error) {
+                showToast(error.message, "error");
+                return;
+            }
+        }
+
         state.modalMode = mode;
-        state.editingId = record ? record.id : null;
+        state.editingId = modalRecord ? modalRecord.id : null;
+        state.contractPeriods = modalRecord && Array.isArray(modalRecord.periodos)
+            ? modalRecord.periodos
+            : [];
+        state.periodMode = null;
+        state.editingPeriodId = null;
         const config = moduleConfig[modalModule];
         const isView = mode === "view";
         const isEdit = mode === "edit";
@@ -668,19 +787,30 @@
         });
 
         clearForm(section);
-        if (record) {
-            fillForm(section, record);
+        if (modalRecord) {
+            fillForm(section, modalRecord);
+        }
+        if (modalModule === "imoveis") {
+            syncEnergyPercentageRequirement();
         }
         if (modalModule === "contratos") {
             setContractDateFields(section, isView);
             updateContractDateConstraints(section);
+            elements.contractPeriodPanel.hidden = !modalRecord;
+            renderContractPeriods();
+            closePeriodEditor();
         }
         setFormDisabled(section, isView);
 
         elements.modalEyebrow.textContent = isView ? "Detalhes" : isEdit ? "Edição" : "Cadastro";
-        elements.modalTitle.textContent = isView ? `Detalhes do ${config.singular}` : isEdit ? `Editar ${config.singular}` : `Novo ${config.singular}`;
+        elements.modalTitle.textContent = isView
+            ? config.viewLabel || `Detalhes do ${config.singular}`
+            : isEdit
+                ? `Editar ${config.singular}`
+                : config.newLabel || `Novo ${config.singular}`;
         elements.modalDescription.textContent = isView ? "Consulte as informações deste registro." : "Preencha os dados abaixo para continuar.";
         elements.modalSubmit.hidden = isView;
+        elements.modalSubmit.textContent = "Salvar cadastro";
         elements.modalCancel.textContent = isView ? "Fechar" : "Cancelar";
         elements.modal.hidden = false;
         document.body.style.overflow = "hidden";
@@ -697,6 +827,9 @@
         elements.modal.hidden = true;
         document.body.style.overflow = "";
         state.editingId = null;
+        state.contractPeriods = [];
+        state.periodMode = null;
+        state.editingPeriodId = null;
         setFormDisabled(getActiveSection(), false);
     }
 
@@ -718,14 +851,22 @@
                 field.value = "";
             }
         });
-        if (state.modalModule === "imoveis") {
+        if (state.modalModule === "imoveis" || state.modalModule === "energia_solar") {
             resetCepLookup();
             populateOwnerSelect();
+        }
+        if (state.modalModule === "imoveis") {
+            if (elements.generationUnitSelect) {
+                elements.generationUnitSelect.value = "";
+            }
+            syncEnergyPercentageRequirement();
         }
         if (state.modalModule === "contratos") {
             resetContractDateFields(section);
             populateContractSelects();
             updateContractDateConstraints(section);
+            clearPeriodEditorFields();
+            renderContractPeriods();
         }
     }
 
@@ -750,6 +891,9 @@
                 field.value = value == null ? "" : String(value);
             }
         });
+        if (state.modalModule === "imoveis") {
+            syncEnergyPercentageRequirement();
+        }
     }
 
     function setFormDisabled(section, disabled) {
@@ -759,17 +903,56 @@
     }
 
     function populateOwnerSelect() {
-        const select = document.getElementById("responsavel-select");
+        document.querySelectorAll("[data-owner-select]").forEach((select) => {
+            const currentValue = select.value;
+            select.innerHTML = "<option value=\"\">Selecione um proprietário</option>";
+            state.owners.forEach((owner) => select.add(new Option(owner.nome_completo, owner.id)));
+            if (currentValue) {
+                select.value = currentValue;
+            }
+            select.disabled = state.owners.length === 0;
+        });
+    }
+
+    function generationUnitLabel(unit) {
+        const identifiers = [
+            unit.inscricao_mun,
+        ];
+        const identifier = identifiers
+            .map((value) => String(value || "").trim())
+            .find((value) => value && !value.includes("\ufffd") && !/[ÃÂ]/.test(value));
+        return identifier || `Unidade #${unit.id}`;
+    }
+
+    function populateGenerationUnitSelect() {
+        const select = elements.generationUnitSelect;
         if (!select) {
             return;
         }
         const currentValue = select.value;
-        select.innerHTML = "<option value=\"\">Selecione um proprietário</option>";
-        state.owners.forEach((owner) => select.add(new Option(owner.nome_completo, owner.id)));
-        if (currentValue) {
+        select.innerHTML = "<option value=\"\">Nenhuma</option>";
+        state.generationUnits.forEach((unit) => {
+            select.add(new Option(generationUnitLabel(unit), unit.id));
+        });
+        if (currentValue && state.generationUnits.some((unit) => String(unit.id) === currentValue)) {
             select.value = currentValue;
         }
-        select.disabled = state.owners.length === 0;
+        select.disabled = false;
+    }
+
+    function syncEnergyPercentageRequirement() {
+        const unitSelect = elements.generationUnitSelect;
+        const percentageField = elements.energyPercentageField;
+        const percentageLabel = elements.energyPercentageLabel;
+        if (!unitSelect || !percentageField) {
+            return;
+        }
+        const hasUnit = Boolean(unitSelect.value);
+        percentageField.required = hasUnit;
+        percentageField.setAttribute("aria-required", String(hasUnit));
+        if (percentageLabel) {
+            percentageLabel.innerHTML = `Percentual de energia${hasUnit ? " <b>*</b>" : ""}`;
+        }
     }
 
     function populateOwnerFilter() {
@@ -844,6 +1027,170 @@
             return;
         }
         end.min = start.value || "";
+    }
+
+    function updatePeriodDateConstraints() {
+        const start = elements.contractPeriodEditor.querySelector('[data-period-field="data_inicio"]');
+        const end = elements.contractPeriodEditor.querySelector('[data-period-field="data_fim"]');
+        if (!start || !end) {
+            return;
+        }
+        end.min = start.value || "";
+    }
+
+    function clearPeriodEditorFields() {
+        if (!elements.contractPeriodEditor) {
+            return;
+        }
+        elements.contractPeriodEditor.querySelectorAll("[data-period-field]").forEach((field) => {
+            field.value = "";
+        });
+        updatePeriodDateConstraints();
+    }
+
+    function renderContractPeriods() {
+        if (!elements.contractPeriodHistory) {
+            return;
+        }
+        if (!state.contractPeriods.length) {
+            elements.contractPeriodHistory.innerHTML = '<p class="section-note">O histórico será criado após o cadastro do contrato.</p>';
+            return;
+        }
+        elements.contractPeriodHistory.innerHTML = state.contractPeriods.map((period) => `
+            <article class="period-card${period.atual ? " is-current" : ""}">
+                <div class="period-card-header">
+                    <div>
+                        <h4 class="period-card-title">Período ${period.ordem}</h4>
+                        <p class="period-card-subtitle">${escapeHtml(formatDate(period.data_inicio))} a ${escapeHtml(formatDate(period.data_fim))}</p>
+                    </div>
+                    ${period.atual ? '<span class="period-badge">Atual</span>' : '<span class="period-badge">Histórico</span>'}
+                </div>
+                <div class="period-card-values">
+                    <div><span class="period-value-label">Aluguel</span><span class="period-value">${escapeHtml(formatCurrency(period.valor_aluguel))}</span></div>
+                    <div><span class="period-value-label">Dia de pagamento</span><span class="period-value">${period.dia_pagamento == null ? "—" : `${escapeHtml(String(period.dia_pagamento))}º`}</span></div>
+                    <div><span class="period-value-label">Caução</span><span class="period-value">${escapeHtml(formatCurrency(period.valor_caucao))}</span></div>
+                    <div><span class="period-value-label">Pagamento caução</span><span class="period-value">${escapeHtml(formatDate(period.data_pagamento_caucao))}</span></div>
+                </div>
+                ${state.modalMode !== "view" ? `<div class="period-card-actions">
+                    <button class="text-button" type="button" data-period-action="edit" data-period-id="${period.id}">Editar período</button>
+                    ${period.atual && state.contractPeriods.length > 1 ? `<button class="text-button period-action-danger" type="button" data-period-action="revert" data-period-id="${period.id}">Reverter renovação</button>` : ""}
+                </div>` : ""}
+            </article>
+        `).join("");
+    }
+
+    function collectPeriodForm() {
+        const data = {};
+        elements.contractPeriodEditor.querySelectorAll("[data-period-field]").forEach((field) => {
+            const value = field.value.trim();
+            data[field.dataset.periodField] = field.dataset.mask === "currency" ? value : value.toUpperCase();
+        });
+        return data;
+    }
+
+    function validatePeriodPayload(data) {
+        if (!data.data_inicio) return "A data de início da renovação é obrigatória.";
+        if (!data.data_fim) return "A data de fim da renovação é obrigatória.";
+        if (data.data_fim < data.data_inicio) return "A data de fim não pode ser anterior à data de início.";
+        if (!data.valor_aluguel) return "O valor do aluguel é obrigatório.";
+        if (!validPaymentDay(data.dia_pagamento)) return "Informe um dia de pagamento inteiro entre 1 e 31.";
+        return null;
+    }
+
+    function validPaymentDay(value) {
+        return /^[0-9]+$/.test(String(value || "")) && Number(value) >= 1 && Number(value) <= 31;
+    }
+
+    function validMonthlyGeneration(value) {
+        return /^[0-9]+$/.test(String(value || "")) && Number(value) >= 0 && Number(value) <= 9999999;
+    }
+
+    function fillPeriodEditor(period) {
+        elements.contractPeriodEditor.querySelectorAll("[data-period-field]").forEach((field) => {
+            const value = period[field.dataset.periodField];
+            if (field.dataset.mask === "currency") {
+                field.value = value == null ? "" : formatCurrency(value);
+            } else {
+                field.value = value == null ? "" : String(value);
+            }
+        });
+        updatePeriodDateConstraints();
+    }
+
+    function prefillPeriodSecurityFields(period) {
+        if (!elements.contractPeriodEditor || !period) {
+            return;
+        }
+        const depositField = elements.contractPeriodEditor.querySelector('[data-period-field="valor_caucao"]');
+        const depositPaymentDateField = elements.contractPeriodEditor.querySelector('[data-period-field="data_pagamento_caucao"]');
+        if (depositField) {
+            depositField.value = period.valor_caucao == null ? "" : formatCurrency(period.valor_caucao);
+        }
+        if (depositPaymentDateField) {
+            depositPaymentDateField.value = period.data_pagamento_caucao == null
+                ? ""
+                : String(period.data_pagamento_caucao);
+        }
+    }
+
+    function openPeriodEditor(mode, period = null) {
+        if (state.modalMode === "view" || !state.editingId) {
+            return;
+        }
+        state.periodMode = mode;
+        state.editingPeriodId = period ? period.id : null;
+        clearPeriodEditorFields();
+        if (period) {
+            fillPeriodEditor(period);
+        } else if (mode === "create") {
+            const previousPeriod = state.contractPeriods[state.contractPeriods.length - 1];
+            prefillPeriodSecurityFields(previousPeriod);
+        }
+        const isEdit = mode === "edit";
+        elements.contractPeriodEditorTitle.textContent = isEdit ? "Editar período" : "Nova renovação";
+        elements.contractPeriodEditorDescription.textContent = isEdit
+            ? "Altere os dados mantendo a linha do tempo sem sobreposição."
+            : "Informe os dados do novo período contratual.";
+        elements.modalSubmit.textContent = isEdit ? "Salvar período" : "Salvar renovação";
+        elements.contractPeriodEditor.hidden = false;
+        updatePeriodDateConstraints();
+        elements.contractPeriodEditor.querySelector("input, select").focus();
+    }
+
+    function closePeriodEditor() {
+        state.periodMode = null;
+        state.editingPeriodId = null;
+        if (elements.contractPeriodEditor) {
+            elements.contractPeriodEditor.hidden = true;
+        }
+        if (elements.modalSubmit && state.modalMode !== "view") {
+            elements.modalSubmit.textContent = "Salvar cadastro";
+        }
+        clearPeriodEditorFields();
+    }
+
+    async function handlePeriodAction(event) {
+        const button = event.target.closest("[data-period-action]");
+        if (!button) return;
+        const period = state.contractPeriods.find((item) => Number(item.id) === Number(button.dataset.periodId));
+        if (!period) return;
+        if (button.dataset.periodAction === "edit") {
+            openPeriodEditor("edit", period);
+            return;
+        }
+        if (!window.confirm("Reverter esta renovação? O período anterior será restaurado.")) return;
+        try {
+            await apiFetch(`${moduleConfig.contratos.endpoint}/${state.editingId}/periodos/${period.id}`, { method: "DELETE" });
+            showToast("Renovação revertida com sucesso.");
+            const detail = await apiFetch(`${moduleConfig.contratos.endpoint}/${state.editingId}`);
+            state.contractPeriods = detail.periodos || [];
+            fillForm(getActiveSection(), detail);
+            closePeriodEditor();
+            renderContractPeriods();
+            await refreshCurrentModule();
+        } catch (error) {
+            showToast(error.message, "error");
+        }
     }
 
     function resetCepLookup() {
@@ -970,7 +1317,8 @@
     }
 
     function setCepStatus(type, message) {
-        const status = document.getElementById("cep-lookup-status");
+        const section = getActiveSection();
+        const status = section ? section.querySelector("[data-cep-status]") : null;
         if (!status) {
             return;
         }
@@ -981,6 +1329,34 @@
     async function handleFormSubmit(event) {
         event.preventDefault();
         if (state.modalMode === "view") {
+            return;
+        }
+
+        if (state.modalModule === "contratos" && state.periodMode) {
+            const periodMode = state.periodMode;
+            const periodPayload = collectPeriodForm();
+            const periodValidationError = validatePeriodPayload(periodPayload);
+            if (periodValidationError) {
+                showToast(periodValidationError, "error");
+                return;
+            }
+            const periodUrl = `${moduleConfig.contratos.endpoint}/${state.editingId}/periodos${periodMode === "edit" ? `/${state.editingPeriodId}` : ""}`;
+            try {
+                await apiFetch(periodUrl, {
+                    method: periodMode === "edit" ? "PUT" : "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(periodPayload),
+                });
+                const detail = await apiFetch(`${moduleConfig.contratos.endpoint}/${state.editingId}`);
+                state.contractPeriods = detail.periodos || [];
+                fillForm(getActiveSection(), detail);
+                closePeriodEditor();
+                renderContractPeriods();
+                showToast(periodMode === "edit" ? "Período atualizado com sucesso." : "Renovação cadastrada com sucesso.");
+                await refreshCurrentModule();
+            } catch (error) {
+                showToast(error.message, "error");
+            }
             return;
         }
 
@@ -1003,7 +1379,10 @@
                 body: JSON.stringify(payload),
             });
             closeModal();
-            showToast(`${config.singular} ${isEdit ? "atualizado" : "cadastrado"} com sucesso.`);
+            const savedWord = config.feminine
+                ? (isEdit ? "atualizada" : "cadastrada")
+                : (isEdit ? "atualizado" : "cadastrado");
+            showToast(`${config.singular} ${savedWord} com sucesso.`);
             await refreshCurrentModule();
             if (currentModule === "proprietarios") {
                 await loadOwners();
@@ -1053,8 +1432,19 @@
             if (!data.aluguel) {
                 return "Aluguel é obrigatório.";
             }
-            if (data.percentual_energia && (Number(data.percentual_energia) < 0 || Number(data.percentual_energia) > 100)) {
+            if (data.unidade_geradora_id && !data.percentual_energia) {
+                return "Percentual de energia é obrigatório quando uma unidade geradora é selecionada.";
+            }
+            if (data.percentual_energia !== "" && (!Number.isFinite(Number(data.percentual_energia)) || Number(data.percentual_energia) < 0 || Number(data.percentual_energia) > 100)) {
                 return "O percentual de energia deve estar entre 0 e 100.";
+            }
+        }
+        if (currentModule === "energia_solar") {
+            if (!data.responsavel) {
+                return "Selecione um proprietário responsável.";
+            }
+            if (data.geracao_mensal_kwh && !validMonthlyGeneration(data.geracao_mensal_kwh)) {
+                return "A estimativa de geração mensal deve ser um inteiro entre 0 e 9.999.999.";
             }
         }
         if (currentModule === "contratos") {
@@ -1075,6 +1465,9 @@
             }
             if (!data.valor_aluguel) {
                 return "Valor do aluguel é obrigatório.";
+            }
+            if (!validPaymentDay(data.dia_pagamento)) {
+                return "Informe um dia de pagamento inteiro entre 1 e 31.";
             }
             if (!data.status) {
                 return "Selecione o status do contrato.";
@@ -1167,6 +1560,11 @@
     function formatCurrency(value) {
         if (value === null || value === undefined || value === "" || Number.isNaN(Number(value))) return "—";
         return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value));
+    }
+
+    function formatGeneration(value) {
+        if (value === null || value === undefined || value === "") return "—";
+        return `${new Intl.NumberFormat("pt-BR").format(Number(value))} kWh/mês`;
     }
 
     function formatDate(value) {

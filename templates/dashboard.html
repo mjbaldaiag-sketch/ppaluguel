@@ -32,6 +32,10 @@
                 <span class="nav-icon" aria-hidden="true">C</span>
                 <span>Contratos</span>
             </button>
+            <button class="nav-item" type="button" data-module="energia_solar">
+                <span class="nav-icon" aria-hidden="true">☼</span>
+                <span>Energia solar</span>
+            </button>
         </nav>
 
         <div class="sidebar-footer">
@@ -103,6 +107,10 @@
                             <span>TOTAL ENERGIA SOLAR</span>
                             <strong id="count-imoveis-energia-solar">0</strong>
                         </div>
+                        <div class="property-count-row">
+                            <span>TOTAL COBRANÇA SOLAR</span>
+                            <strong id="count-imoveis-cobranca-solar">0</strong>
+                        </div>
                     </div>
                 </article>
                 <article class="summary-card summary-card-amber">
@@ -123,10 +131,18 @@
                         <p id="module-description">Gerencie as pessoas responsáveis pelos seus imóveis.</p>
                     </div>
                     <div class="module-meta">
-                        <label class="owner-filter" for="owner-filter">
+                        <label class="global-filter" for="owner-filter">
                             <span>Proprietário</span>
                             <select id="owner-filter" aria-label="Filtrar por proprietário">
                                 <option value="">TODOS</option>
+                            </select>
+                        </label>
+                        <label class="global-filter" for="solar-filter">
+                            <span>Cobrança solar</span>
+                            <select id="solar-filter" aria-label="Filtrar por cobrança solar">
+                                <option value="">TODOS</option>
+                                <option value="1">SIM</option>
+                                <option value="0">NÃO</option>
                             </select>
                         </label>
                         <span class="record-count" id="record-count">0 registros</span>
@@ -323,13 +339,13 @@
                     </label>
                     <label class="form-field">
                         <span>Proprietário responsável <b>*</b></span>
-                        <select data-field="responsavel" id="responsavel-select">
+                        <select data-field="responsavel" id="responsavel-select" data-owner-select>
                             <option value="">Selecione um proprietário</option>
                         </select>
                     </label>
                     <label class="form-field">
                         <span class="field-label-row">
-                            <span>CEP <small class="field-status" id="cep-lookup-status" aria-live="polite"></small></span>
+                            <span>CEP <small class="field-status" id="cep-lookup-status" data-cep-status aria-live="polite"></small></span>
                             <button class="clear-cep-button" id="clear-cep-button" type="button">Limpar CEP</button>
                         </span>
                         <input type="text" data-field="cep" data-mask="cep" inputmode="numeric" placeholder="00000-000" autocomplete="postal-code">
@@ -384,7 +400,7 @@
                         <input type="text" data-field="numero_agua">
                     </label>
                     <label class="form-field">
-                        <span>Administração da propriedade</span>
+                        <span>Cobrança energia solar</span>
                         <select data-field="adm_propriedade">
                             <option value="0">Não</option>
                             <option value="1">Sim</option>
@@ -407,11 +423,77 @@
                     </label>
                     <label class="form-field">
                         <span>Unidade geradora</span>
-                        <input type="text" data-field="unidade_geradora" placeholder="Nome ou código">
+                        <select data-field="unidade_geradora_id" id="unidade-geradora-select">
+                            <option value="">Nenhuma</option>
+                        </select>
                     </label>
                     <label class="form-field">
-                        <span>Percentual de energia</span>
+                        <span id="percentual-energia-label">Percentual de energia</span>
                         <input type="number" data-field="percentual_energia" min="0" max="100" step="0.01" placeholder="0,00">
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-section" data-form-section="energia_solar" hidden>
+                <div class="form-section-heading">
+                    <h3>Unidade de geração e endereço</h3>
+                    <span>Campos com <b>*</b> são obrigatórios.</span>
+                </div>
+                <div class="form-grid">
+                    <label class="form-field">
+                        <span>Proprietário responsável <b>*</b></span>
+                        <select data-field="responsavel" id="geracao-responsavel-select" data-owner-select aria-required="true">
+                            <option value="">Selecione um proprietário</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span class="field-label-row">
+                            <span>CEP <small class="field-status" data-cep-status aria-live="polite"></small></span>
+                            <button class="clear-cep-button" type="button">Limpar CEP</button>
+                        </span>
+                        <input type="text" data-field="cep" data-mask="cep" inputmode="numeric" placeholder="00000-000" autocomplete="postal-code">
+                    </label>
+                    <label class="form-field form-field-wide">
+                        <span>Endereço</span>
+                        <input type="text" data-field="endereco" autocomplete="street-address" placeholder="Preenchido automaticamente pelo CEP">
+                    </label>
+                    <label class="form-field">
+                        <span>Estado</span>
+                        <select data-field="estado">
+                            <option value="">Selecione a UF</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Cidade</span>
+                        <input type="text" data-field="cidade">
+                    </label>
+                    <label class="form-field">
+                        <span>Bairro</span>
+                        <input type="text" data-field="bairro">
+                    </label>
+                    <label class="form-field">
+                        <span>Número</span>
+                        <input type="text" data-field="numero">
+                    </label>
+                    <label class="form-field form-field-wide">
+                        <span>Complemento</span>
+                        <input type="text" data-field="complemento">
+                    </label>
+                    <label class="form-field">
+                        <span>Número de instalação</span>
+                        <input type="text" data-field="numero_instalacao" inputmode="text">
+                    </label>
+                    <label class="form-field">
+                        <span>Número unidade geradora/consumidora</span>
+                        <input type="text" data-field="numero_unidade_geradora_consumidora" inputmode="text">
+                    </label>
+                    <label class="form-field">
+                        <span>Identificação municipal</span>
+                        <input type="text" data-field="inscricao_mun">
+                    </label>
+                    <label class="form-field generation-field">
+                        <span>Est. de geração mensal (kWh/mês)</span>
+                        <input type="number" data-field="geracao_mensal_kwh" min="0" max="9999999" step="1" inputmode="numeric" placeholder="0 a 9.999.999">
                     </label>
                 </div>
             </div>
@@ -421,7 +503,7 @@
                     <h3>Dados do contrato</h3>
                     <span>Campos com <b>*</b> são obrigatórios.</span>
                 </div>
-                <div class="form-grid">
+                <div class="form-grid contract-fields-grid">
                     <label class="form-field">
                         <span>Imóvel <b>*</b></span>
                         <select data-field="imovel_id" id="imovel-select" aria-required="true">
@@ -447,8 +529,16 @@
                         <input type="text" data-field="valor_aluguel" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00" aria-required="true">
                     </label>
                     <label class="form-field">
+                        <span>Dia de pagamento <b>*</b></span>
+                        <input type="number" data-field="dia_pagamento" min="1" max="31" step="1" inputmode="numeric" placeholder="1 a 31" aria-required="true">
+                    </label>
+                    <label class="form-field">
                         <span>Valor da caução</span>
                         <input type="text" data-field="valor_caucao" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
+                    </label>
+                    <label class="form-field">
+                        <span>Pagamento da caução</span>
+                        <input type="date" data-field="data_pagamento_caucao">
                     </label>
                     <label class="form-field">
                         <span>Status <b>*</b></span>
@@ -457,6 +547,53 @@
                             <option value="ENCERRADO">Encerrado</option>
                         </select>
                     </label>
+                </div>
+
+                <div class="contract-period-panel" id="contract-period-panel" hidden>
+                    <div class="form-section-heading form-section-heading-spaced">
+                        <div>
+                            <h3>Histórico de períodos</h3>
+                            <p class="section-note">Os valores e a caução ficam preservados em cada período.</p>
+                        </div>
+                        <button class="secondary-button" id="new-contract-period" type="button">Adicionar renovação</button>
+                    </div>
+                    <div class="contract-period-history" id="contract-period-history" aria-live="polite"></div>
+
+                    <div class="contract-period-editor" id="contract-period-editor" hidden>
+                        <div class="period-editor-heading">
+                            <div>
+                                <h4 id="contract-period-editor-title">Nova renovação</h4>
+                                <p id="contract-period-editor-description">Informe os dados do novo período contratual.</p>
+                            </div>
+                            <button class="text-button" id="cancel-contract-period" type="button">Cancelar</button>
+                        </div>
+                        <div class="form-grid contract-period-grid">
+                            <label class="form-field">
+                                <span>Início <b>*</b></span>
+                                <input type="date" data-period-field="data_inicio" id="period-data-inicio" aria-required="true">
+                            </label>
+                            <label class="form-field">
+                                <span>Fim <b>*</b></span>
+                                <input type="date" data-period-field="data_fim" id="period-data-fim" aria-required="true">
+                            </label>
+                            <label class="form-field">
+                                <span>Aluguel <b>*</b></span>
+                                <input type="text" data-period-field="valor_aluguel" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00" aria-required="true">
+                            </label>
+                            <label class="form-field">
+                                <span>Dia de pagamento <b>*</b></span>
+                                <input type="number" data-period-field="dia_pagamento" min="1" max="31" step="1" inputmode="numeric" placeholder="1 a 31" aria-required="true">
+                            </label>
+                            <label class="form-field">
+                                <span>Caução</span>
+                                <input type="text" data-period-field="valor_caucao" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
+                            </label>
+                            <label class="form-field">
+                                <span>Pagamento da caução</span>
+                                <input type="date" data-period-field="data_pagamento_caucao">
+                            </label>
+                        </div>
+                    </div>
                 </div>
             </div>
 

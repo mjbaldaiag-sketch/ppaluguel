@@ -513,13 +513,13 @@ h3 {
     gap: 15px;
 }
 
-.owner-filter {
+.global-filter {
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
-.owner-filter > span {
+.global-filter > span {
     color: #9ca7b7;
     font-size: 10px;
     font-weight: 750;
@@ -527,7 +527,7 @@ h3 {
     text-transform: uppercase;
 }
 
-.owner-filter select {
+.global-filter select {
     min-height: 36px;
     max-width: 220px;
     padding: 0 10px;
@@ -705,6 +705,23 @@ h3 {
 .row-avatar.property {
     background: #e7f7f0;
     color: #36a77d;
+}
+
+.row-avatar.generation {
+    background: #fff4d8;
+    color: #c98b1b;
+}
+
+.generation-value {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 9px;
+    border-radius: 999px;
+    background: #fff7e5;
+    color: #b77c12;
+    font-size: 10px;
+    font-weight: 800;
+    white-space: nowrap;
 }
 
 .subtle-text {
@@ -921,9 +938,164 @@ h3 {
     gap: 15px;
 }
 
+.contract-fields-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.contract-period-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.contract-period-panel {
+    margin-top: 4px;
+}
+
+.section-note {
+    margin-top: 5px;
+    color: #9aa5b5;
+    font-size: 11px;
+}
+
+.contract-period-history {
+    display: grid;
+    gap: 10px;
+}
+
+.period-card {
+    padding: 14px 15px;
+    border: 1px solid #e5eaf2;
+    border-radius: 12px;
+    background: #fbfcfe;
+}
+
+.period-card.is-current {
+    border-color: #aeb9f3;
+    background: #f8f9ff;
+    box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.period-card-header,
+.period-editor-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.period-card-title,
+.period-editor-heading h4 {
+    margin: 0;
+    color: var(--ink);
+    font-size: 12px;
+}
+
+.period-card-subtitle,
+.period-editor-heading p {
+    margin-top: 4px;
+    color: #8d99aa;
+    font-size: 10px;
+}
+
+.period-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #e9edff;
+    color: var(--primary);
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.period-card-values {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 13px;
+}
+
+.period-value-label {
+    display: block;
+    color: #9aa5b5;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.period-value {
+    display: block;
+    margin-top: 4px;
+    color: #4c5a70;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.period-card-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.text-button {
+    padding: 3px 0;
+    background: transparent;
+    color: var(--primary);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.text-button:hover {
+    color: #3447b5;
+}
+
+.period-action-danger {
+    color: var(--danger);
+}
+
+.period-action-danger:hover {
+    color: #b54250;
+}
+
+.contract-period-editor {
+    display: grid;
+    gap: 15px;
+    margin-top: 15px;
+    padding: 16px;
+    border: 1px solid #dfe5f7;
+    border-radius: 12px;
+    background: #fafbff;
+}
+
 .form-field {
     display: grid;
     gap: 7px;
+}
+
+.generation-field {
+    padding: 11px;
+    border: 1px solid #f1d48a;
+    border-radius: 12px;
+    background: #fffaf0;
+}
+
+.generation-field > span {
+    color: #a46c0b;
+}
+
+.generation-field input {
+    border-color: #edcf80;
+    background: #fff;
+    color: #865e13;
+    font-weight: 750;
+}
+
+.generation-field input:focus {
+    border-color: #d9a83d;
+    box-shadow: 0 0 0 3px rgba(217, 168, 61, .14);
 }
 
 .form-field-wide {
@@ -1204,11 +1376,11 @@ h3 {
         row-gap: 8px;
     }
 
-    .owner-filter {
+    .global-filter {
         flex: 1 1 100%;
     }
 
-    .owner-filter select {
+    .global-filter select {
         flex: 1;
         max-width: none;
     }
@@ -1240,6 +1412,12 @@ h3 {
     }
 
     .form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .contract-fields-grid,
+    .contract-period-grid,
+    .period-card-values {
         grid-template-columns: 1fr;
     }
 

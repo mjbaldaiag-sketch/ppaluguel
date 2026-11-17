@@ -66,8 +66,25 @@ class AppCrudTestCase(unittest.TestCase):
             "adm_propriedade": "1",
             "imobiliaria": "1",
             "tipo_operacao": "ALUGUEL",
-            "unidade_geradora": "UG-01",
+            "unidade_geradora_id": "",
             "percentual_energia": "35,5",
+        }
+
+    @staticmethod
+    def generation_unit_payload(owner_id, generation="0"):
+        return {
+            "responsavel": owner_id,
+            "cep": "01001-000",
+            "endereco": "Praça da Sé",
+            "estado": "sp",
+            "cidade": "São Paulo",
+            "bairro": "Sé",
+            "numero": "100",
+            "complemento": "Portão 2",
+            "inscricao_mun": "UG-001",
+            "numero_instalacao": "INST-123A",
+            "numero_unidade_geradora_consumidora": "UGC-456B",
+            "geracao_mensal_kwh": generation,
         }
 
     @staticmethod
@@ -78,6 +95,7 @@ class AppCrudTestCase(unittest.TestCase):
             "data_inicio": "2026-01-01",
             "data_fim": "2027-01-01",
             "valor_aluguel": "R$ 2.500,00",
+            "dia_pagamento": "5",
             "valor_caucao": "R$ 5.000,00",
         }
 
@@ -95,6 +113,7 @@ class AppCrudTestCase(unittest.TestCase):
                 "imoveis": 0,
                 "imoveis_locacao": 0,
                 "imoveis_energia_solar": 0,
+                "imoveis_cobranca_solar": 0,
                 "contratos": 0,
             },
         )
@@ -186,6 +205,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(property_data["responsavel"], owner["id"])
         self.assertEqual(property_data["tipo_imovel"], "APARTAMENTO")
         self.assertEqual(property_data["aluguel"], 2500.0)
+        self.assertEqual(property_data["adm_propriedade"], 1)
         self.assertEqual(property_data["imobiliaria"], 1)
         self.assertEqual(property_data["tipo_operacao"], "ALUGUEL")
         self.assertNotIn("energia_solar", property_data)
@@ -199,11 +219,17 @@ class AppCrudTestCase(unittest.TestCase):
         changed = self.property_payload(owner["id"])
         changed["apelido"] = "Casa Atualizada"
         changed["tipo_imovel"] = "CASA"
+        changed["adm_propriedade"] = "0"
         changed["tipo_operacao"] = "ALUGUEL + ENERGIA SOLAR"
         updated = self.put_json(f"/api/imoveis/{property_data['id']}", changed)
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.get_json()["tipo_imovel"], "CASA")
+        self.assertEqual(updated.get_json()["adm_propriedade"], 0)
         self.assertEqual(updated.get_json()["tipo_operacao"], "ALUGUEL + ENERGIA SOLAR")
+        self.assertEqual(
+            self.client.get("/api/dashboard").get_json()["counts"]["imoveis_cobranca_solar"],
+            0,
+        )
         self.assertEqual(
             self.client.delete(f"/api/imoveis/{property_data['id']}").status_code,
             204,
@@ -211,6 +237,197 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(
             self.client.delete(f"/api/proprietarios/{owner['id']}").status_code,
             204,
+        )
+
+    def test_generation_unit_crud_filter_and_owner_delete_block(self):
+        owner_one = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário Solar Um")
+        ).get_json()
+        owner_two = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário Solar Dois")
+        ).get_json()
+
+        payload = self.generation_unit_payload(owner_one["id"], "0")
+        created = self.post_json("/api/unidades-geracao", payload)
+        self.assertEqual(created.status_code, 201)
+        unit = created.get_json()
+        self.assertEqual(unit["responsavel"], owner_one["id"])
+        self.assertEqual(unit["responsavel_nome"], "PROPRIETÁRIO SOLAR UM")
+        self.assertEqual(unit["cep"], "01001000")
+        self.assertEqual(unit["estado"], "SP")
+        self.assertEqual(unit["geracao_mensal_kwh"], 0)
+        self.assertEqual(unit["inscricao_mun"], "UG-001")
+        self.assertEqual(unit["numero_instalacao"], "INST-123A")
+        self.assertEqual(unit["numero_unidade_geradora_consumidora"], "UGC-456B")
+
+        fetched = self.client.get(f"/api/unidades-geracao/{unit['id']}")
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.get_json()["cidade"], "SÃO PAULO")
+
+        changed = self.generation_unit_payload(owner_two["id"], "9999999")
+        changed["inscricao_mun"] = "UG-999"
+        changed["numero_instalacao"] = "INST-999Z"
+        changed["numero_unidade_geradora_consumidora"] = "UGC-999Y"
+        updated = self.put_json(f"/api/unidades-geracao/{unit['id']}", changed)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["responsavel"], owner_two["id"])
+        self.assertEqual(updated.get_json()["geracao_mensal_kwh"], 9999999)
+        self.assertEqual(updated.get_json()["inscricao_mun"], "UG-999")
+        self.assertEqual(updated.get_json()["numero_instalacao"], "INST-999Z")
+        self.assertEqual(
+            updated.get_json()["numero_unidade_geradora_consumidora"], "UGC-999Y"
+        )
+
+        owner_one_units = self.client.get(
+            f"/api/unidades-geracao?proprietario_id={owner_one['id']}"
+        )
+        self.assertEqual(owner_one_units.status_code, 200)
+        self.assertEqual(owner_one_units.get_json(), [])
+        owner_two_units = self.client.get(
+            f"/api/unidades-geracao?proprietario_id={owner_two['id']}"
+        )
+        self.assertEqual([item["id"] for item in owner_two_units.get_json()], [unit["id"]])
+
+        blocked = self.client.delete(f"/api/proprietarios/{owner_two['id']}")
+        self.assertEqual(blocked.status_code, 409)
+
+        self.assertEqual(
+            self.client.delete(f"/api/unidades-geracao/{unit['id']}").status_code,
+            204,
+        )
+        self.assertEqual(
+            self.client.delete(f"/api/proprietarios/{owner_two['id']}").status_code,
+            204,
+        )
+
+    def test_property_generation_unit_link_crud_and_integrity(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário do Vínculo")
+        ).get_json()
+        unit = self.post_json(
+            "/api/unidades-geracao",
+            self.generation_unit_payload(owner["id"], "3000"),
+        ).get_json()
+
+        linked_payload = self.property_payload(owner["id"])
+        linked_payload.update(
+            {"unidade_geradora_id": unit["id"], "percentual_energia": "35,5"}
+        )
+        created = self.post_json("/api/imoveis", linked_payload)
+        self.assertEqual(created.status_code, 201)
+        property_data = created.get_json()
+        self.assertEqual(property_data["unidade_geradora_id"], unit["id"])
+        self.assertEqual(property_data["unidade_geradora_identificacao"], "UG-001")
+
+        fetched = self.client.get(f"/api/imoveis/{property_data['id']}").get_json()
+        self.assertEqual(fetched["unidade_geradora_id"], unit["id"])
+
+        shared_payload = self.property_payload(owner["id"])
+        shared_payload.update(
+            {"apelido": "Outro imóvel solar", "unidade_geradora_id": unit["id"], "percentual_energia": "0"}
+        )
+        shared = self.post_json("/api/imoveis", shared_payload)
+        self.assertEqual(shared.status_code, 201)
+        self.assertEqual(shared.get_json()["unidade_geradora_id"], unit["id"])
+
+        changed = dict(linked_payload)
+        changed.update({"unidade_geradora_id": "", "percentual_energia": "25"})
+        updated = self.put_json(f"/api/imoveis/{property_data['id']}", changed)
+        self.assertEqual(updated.status_code, 200)
+        self.assertIsNone(updated.get_json()["unidade_geradora_id"])
+        self.assertEqual(updated.get_json()["percentual_energia"], 25.0)
+
+        blocked = self.client.delete(f"/api/unidades-geracao/{unit['id']}")
+        self.assertEqual(blocked.status_code, 409)
+
+        self.assertEqual(self.client.delete(f"/api/imoveis/{shared.get_json()['id']}").status_code, 204)
+        connection = sqlite3.connect(Path(self.temp_dir.name) / "test.db")
+        self.assertEqual(
+            connection.execute(
+                "SELECT COUNT(*) FROM imovel_unidade_geradora WHERE imovel_id = ?",
+                (shared.get_json()["id"],),
+            ).fetchone()[0],
+            0,
+        )
+        connection.close()
+
+    def test_property_generation_unit_validation_and_optional_percentage(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Validação do Vínculo")
+        ).get_json()
+        unit = self.post_json(
+            "/api/unidades-geracao",
+            self.generation_unit_payload(owner["id"], "0"),
+        ).get_json()
+
+        without_unit = self.property_payload(owner["id"])
+        without_unit["unidade_geradora_id"] = ""
+        without_unit["percentual_energia"] = ""
+        self.assertEqual(self.post_json("/api/imoveis", without_unit).status_code, 201)
+
+        missing_percentage = self.property_payload(owner["id"])
+        missing_percentage["unidade_geradora_id"] = unit["id"]
+        missing_percentage["percentual_energia"] = ""
+        self.assertEqual(self.post_json("/api/imoveis", missing_percentage).status_code, 400)
+
+        zero_percentage = self.property_payload(owner["id"])
+        zero_percentage["unidade_geradora_id"] = unit["id"]
+        zero_percentage["percentual_energia"] = "0"
+        self.assertEqual(self.post_json("/api/imoveis", zero_percentage).status_code, 201)
+
+        invalid_unit = self.property_payload(owner["id"])
+        invalid_unit["unidade_geradora_id"] = 999
+        invalid_unit["percentual_energia"] = "10"
+        self.assertEqual(self.post_json("/api/imoveis", invalid_unit).status_code, 400)
+
+        legacy_payload = self.property_payload(owner["id"])
+        legacy_payload.pop("unidade_geradora_id")
+        legacy_payload["unidade_geradora"] = "UG-LIVRE"
+        self.assertEqual(self.post_json("/api/imoveis", legacy_payload).status_code, 400)
+
+    def test_generation_unit_validation_and_optional_generation(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Validação Solar")
+        ).get_json()
+
+        optional_payload = self.generation_unit_payload(owner["id"], "")
+        optional = self.post_json("/api/unidades-geracao", optional_payload)
+        self.assertEqual(optional.status_code, 201)
+        self.assertIsNone(optional.get_json()["geracao_mensal_kwh"])
+
+        maximum = self.post_json(
+            "/api/unidades-geracao",
+            self.generation_unit_payload(owner["id"], "9999999"),
+        )
+        self.assertEqual(maximum.status_code, 201)
+        self.assertEqual(maximum.get_json()["geracao_mensal_kwh"], 9999999)
+
+        invalid_values = ("-1", "1.5", "abc", "10000000", True)
+        for value in invalid_values:
+            invalid = self.post_json(
+                "/api/unidades-geracao",
+                self.generation_unit_payload(owner["id"], value),
+            )
+            self.assertEqual(invalid.status_code, 400, value)
+
+        missing_owner = self.post_json(
+            "/api/unidades-geracao", self.generation_unit_payload(None, "0")
+        )
+        self.assertEqual(missing_owner.status_code, 400)
+        invalid_owner = self.post_json(
+            "/api/unidades-geracao", self.generation_unit_payload(999, "0")
+        )
+        self.assertEqual(invalid_owner.status_code, 400)
+
+        invalid_cep = self.generation_unit_payload(owner["id"], "0")
+        invalid_cep["cep"] = "123"
+        self.assertEqual(self.post_json("/api/unidades-geracao", invalid_cep).status_code, 400)
+        invalid_state = self.generation_unit_payload(owner["id"], "0")
+        invalid_state["estado"] = "XX"
+        self.assertEqual(self.post_json("/api/unidades-geracao", invalid_state).status_code, 400)
+        self.assertEqual(
+            self.client.get("/api/unidades-geracao?proprietario_id=abc").status_code,
+            400,
         )
 
     def test_contract_crud_relationships_and_parent_delete_block(self):
@@ -234,6 +451,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(contract["inquilino_id"], tenant["id"])
         self.assertEqual(contract["data_inicio"], "2026-01-01")
         self.assertEqual(contract["valor_aluguel"], 2500.0)
+        self.assertEqual(contract["dia_pagamento"], 5)
         self.assertEqual(contract["valor_caucao"], 5000.0)
         self.assertEqual(contract["status"], "ATIVO")
         self.assertEqual(contract["imovel_nome"], "APARTAMENTO CENTRO")
@@ -330,6 +548,138 @@ class AppCrudTestCase(unittest.TestCase):
         )
         self.assertEqual(invalid_update.status_code, 400)
 
+    def test_contract_period_history_renewal_edit_and_revert(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário dos Períodos")
+        ).get_json()
+        property_data = self.post_json(
+            "/api/imoveis", self.property_payload(owner["id"])
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente dos Períodos")
+        ).get_json()
+
+        initial_payload = self.contract_payload(property_data["id"], tenant["id"])
+        initial_payload["data_pagamento_caucao"] = "2026-01-05"
+        contract = self.post_json("/api/contratos", initial_payload).get_json()
+        contract_id = contract["id"]
+        self.assertEqual(len(contract["periodos"]), 1)
+        self.assertEqual(contract["periodos"][0]["data_pagamento_caucao"], "2026-01-05")
+
+        renewal_payload = {
+            "data_inicio": "2027-01-01",
+            "data_fim": "2028-01-01",
+            "valor_aluguel": "R$ 3.000,00",
+            "dia_pagamento": "10",
+            "valor_caucao": "R$ 6.000,00",
+            "data_pagamento_caucao": "2027-01-05",
+        }
+        renewal = self.post_json(
+            f"/api/contratos/{contract_id}/periodos", renewal_payload
+        )
+        self.assertEqual(renewal.status_code, 201)
+        self.assertEqual(renewal.get_json()["valor_aluguel"], 3000.0)
+
+        detail = self.client.get(f"/api/contratos/{contract_id}").get_json()
+        self.assertEqual(detail["data_inicio"], "2027-01-01")
+        self.assertEqual(detail["valor_caucao"], 6000.0)
+        self.assertEqual(detail["dia_pagamento"], 10)
+        self.assertEqual(detail["data_pagamento_caucao"], "2027-01-05")
+        self.assertEqual(len(detail["periodos"]), 2)
+        self.assertEqual(detail["periodos"][0]["data_fim"], "2026-12-31")
+        self.assertEqual(detail["periodos"][0]["valor_aluguel"], 2500.0)
+        self.assertEqual(detail["periodos"][0]["dia_pagamento"], 5)
+        self.assertEqual(detail["periodos"][0]["data_pagamento_caucao"], "2026-01-05")
+        self.assertTrue(detail["periodos"][1]["atual"])
+
+        overlapping = self.post_json(
+            f"/api/contratos/{contract_id}/periodos",
+            dict(renewal_payload, data_inicio="2026-06-01"),
+        )
+        self.assertEqual(overlapping.status_code, 400)
+
+        first_period_id = detail["periodos"][0]["id"]
+        edited_first = self.put_json(
+            f"/api/contratos/{contract_id}/periodos/{first_period_id}",
+            dict(initial_payload, data_fim="2026-12-30"),
+        )
+        self.assertEqual(edited_first.status_code, 200)
+        self.assertEqual(edited_first.get_json()["data_fim"], "2026-12-30")
+
+        deleted_initial = self.client.delete(
+            f"/api/contratos/{contract_id}/periodos/{first_period_id}"
+        )
+        self.assertEqual(deleted_initial.status_code, 409)
+
+        latest_period_id = detail["periodos"][1]["id"]
+        reverted = self.client.post(
+            f"/api/contratos/{contract_id}/periodos/{latest_period_id}/reverter"
+        )
+        self.assertEqual(reverted.status_code, 204)
+        reverted_detail = self.client.get(f"/api/contratos/{contract_id}").get_json()
+        self.assertEqual(len(reverted_detail["periodos"]), 1)
+        self.assertEqual(reverted_detail["periodos"][0]["data_fim"], "2026-12-30")
+        self.assertEqual(reverted_detail["valor_aluguel"], 2500.0)
+
+    def test_contract_period_table_is_backfilled_during_migration(self):
+        database = Path(self.temp_dir.name) / "legacy-periods.db"
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE proprietario (
+                id INTEGER PRIMARY KEY, nome_completo TEXT NOT NULL, rg TEXT, cpf TEXT,
+                contato TEXT, profissao TEXT, estado_civil TEXT, email TEXT
+            );
+            INSERT INTO proprietario (id, nome_completo) VALUES (1, 'PROPRIETARIO');
+            CREATE TABLE inquilinos_clientes (
+                id INTEGER PRIMARY KEY, nome_completo TEXT NOT NULL, rg TEXT, cpf TEXT,
+                contato TEXT, profissao TEXT, estado_civil TEXT, email TEXT
+            );
+            INSERT INTO inquilinos_clientes (id, nome_completo) VALUES (1, 'CLIENTE');
+            CREATE TABLE imoveis (
+                id INTEGER PRIMARY KEY, apelido TEXT NOT NULL, responsavel INTEGER NOT NULL,
+                cep TEXT, estado TEXT, cidade TEXT, bairro TEXT, numero TEXT,
+                complemento TEXT, inscricao_mun TEXT, aluguel REAL NOT NULL DEFAULT 0,
+                numero_energia TEXT, numero_agua TEXT, adm_propriedade INTEGER NOT NULL DEFAULT 0,
+                unidade_geradora TEXT, percentual_energia REAL
+            );
+            INSERT INTO imoveis (id, apelido, responsavel, aluguel)
+            VALUES (1, 'IMOVEL', 1, 1000);
+            CREATE TABLE contratos (
+                id INTEGER PRIMARY KEY, imovel_id INTEGER NOT NULL, inquilino_id INTEGER NOT NULL,
+                data_inicio TEXT NOT NULL, data_fim TEXT NOT NULL,
+                valor_aluguel REAL NOT NULL, valor_caucao REAL
+            );
+            INSERT INTO contratos VALUES (1, 1, 1, '2026-01-01', '2027-01-01', 1500, 3000);
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = create_app({"TESTING": True, "DATABASE": str(database)})
+        migrated_client = migrated.test_client()
+        detail = migrated_client.get("/api/contratos/1").get_json()
+        self.assertEqual(len(detail["periodos"]), 1)
+        self.assertIsNone(detail["periodos"][0]["dia_pagamento"])
+        self.assertEqual(detail["periodos"][0]["valor_caucao"], 3000.0)
+        legacy_update = migrated_client.put(
+            "/api/contratos/1",
+            data=json.dumps(
+                {
+                    "imovel_id": 1,
+                    "inquilino_id": 1,
+                    "data_inicio": "2026-01-01",
+                    "data_fim": "2027-01-01",
+                    "valor_aluguel": "1500",
+                    "valor_caucao": "3000",
+                    "status": "ATIVO",
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(legacy_update.status_code, 200)
+        self.assertIsNone(legacy_update.get_json()["dia_pagamento"])
+
     def test_contract_validation_errors(self):
         owner = self.post_json(
             "/api/proprietarios", self.person_payload("Proprietário Validação")
@@ -358,22 +708,44 @@ class AppCrudTestCase(unittest.TestCase):
         invalid_money = dict(valid, valor_aluguel="-1")
         self.assertEqual(self.post_json("/api/contratos", invalid_money).status_code, 400)
 
+        for invalid_day in ("0", "32", "1.5", "abc", ""):
+            invalid_payment_day = dict(valid, dia_pagamento=invalid_day)
+            self.assertEqual(
+                self.post_json("/api/contratos", invalid_payment_day).status_code,
+                400,
+            )
+
     def test_dashboard_contract_count_and_page_markup(self):
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn('data-module="contratos"', page)
+        self.assertIn('data-module="energia_solar"', page)
+        self.assertIn('data-form-section="energia_solar"', page)
+        self.assertIn('data-field="geracao_mensal_kwh"', page)
+        self.assertIn('data-field="numero_instalacao"', page)
+        self.assertIn('data-field="numero_unidade_geradora_consumidora"', page)
+        self.assertIn('Est. de geração mensal (kWh/mês)', page)
+        self.assertIn('class="form-field generation-field"', page)
+        self.assertIn("Limpar CEP", page)
         self.assertIn('data-form-section="contratos"', page)
         self.assertIn('data-field="tipo_imovel"', page)
         self.assertIn('data-field="tipo_operacao"', page)
+        self.assertIn('data-field="unidade_geradora_id"', page)
+        self.assertIn('<option value="">Nenhuma</option>', page)
+        self.assertNotIn('data-field="unidade_geradora"', page)
         self.assertIn('value="ALUGUEL"', page)
         self.assertIn('value="ENERGIA SOLAR"', page)
         self.assertIn('value="ALUGUEL + ENERGIA SOLAR"', page)
         self.assertNotIn('data-field="energia_solar"', page)
         self.assertIn('id="count-imoveis-locacao"', page)
+        self.assertIn('id="count-imoveis-cobranca-solar"', page)
         self.assertIn('id="count-imoveis-energia-solar"', page)
         self.assertNotIn('id="count-imoveis"', page)
         self.assertIn('class="property-card-title">Imóveis</span>', page)
         self.assertIn(">TOTAL LOCAÇÃO</span>", page)
+        self.assertIn(">TOTAL COBRANÇA SOLAR</span>", page)
         self.assertIn(">TOTAL ENERGIA SOLAR</span>", page)
+        self.assertLess(page.index(">TOTAL LOCAÇÃO</span>"), page.index(">TOTAL ENERGIA SOLAR</span>"))
+        self.assertLess(page.index(">TOTAL ENERGIA SOLAR</span>"), page.index(">TOTAL COBRANÇA SOLAR</span>"))
         self.assertIn("GALPÃO COMERCIAL", page)
         self.assertIn("CHÁCARA/SÍTIO", page)
         self.assertEqual(page.count('data-field="rg"'), 2)
@@ -383,6 +755,12 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('data-field="imovel_id"', page)
         self.assertIn('data-field="inquilino_id"', page)
         self.assertIn('data-field="status"', page)
+        self.assertIn('data-field="dia_pagamento"', page)
+        self.assertIn('data-period-field="dia_pagamento"', page)
+        self.assertIn("<span>Cobrança energia solar</span>", page)
+        self.assertNotIn("<span>Administração da propriedade</span>", page)
+        self.assertIn('<option value="0">Não</option>', page)
+        self.assertIn('<option value="1">Sim</option>', page)
         self.assertIn('value="ATIVO">Ativo</option>', page)
         self.assertIn('value="ENCERRADO">Encerrado</option>', page)
         self.assertIn('id="active-contracts-head"', page)
@@ -393,6 +771,42 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn(">Limpar CEP</button>", page)
         self.assertIn('id="count-contratos"', page)
         self.assertIn('id="owner-filter"', page)
+        self.assertIn('id="solar-filter"', page)
+        self.assertLess(page.index('id="owner-filter"'), page.index('id="solar-filter"'))
+        self.assertIn('<option value="1">SIM</option>', page)
+        self.assertIn('<option value="0">NÃO</option>', page)
+        self.assertIn("Cobrança solar", page)
+        self.assertNotIn("\ufffd", page)
+
+        app_js = Path(__file__).resolve().parents[1] / "static" / "js" / "app.js"
+        source = app_js.read_text(encoding="utf-8")
+        self.assertIn("function prefillPeriodSecurityFields(period)", source)
+        self.assertIn("prefillPeriodSecurityFields(previousPeriod);", source)
+        self.assertIn('[data-period-field="valor_caucao"]', source)
+        self.assertIn('[data-period-field="data_pagamento_caucao"]', source)
+        self.assertIn("count-imoveis-cobranca-solar", source)
+        self.assertIn("counts.imoveis_cobranca_solar", source)
+        self.assertIn("solarFilterValue", source)
+        self.assertIn("adm_propriedade=${encodeURIComponent(state.solarFilterValue)}", source)
+        self.assertIn("withPropertyFilters", source)
+        self.assertIn("/api/unidades-geracao", source)
+        self.assertIn("syncEnergyPercentageRequirement", source)
+        self.assertIn("unidade_geradora_id", source)
+        self.assertIn("generationUnitLabel", source)
+        energy_config = source.split("energia_solar:", 1)[1].split("contratos:", 1)[0]
+        self.assertIn('label: "Unidade de geração"', energy_config)
+        self.assertNotIn('label: "Identificação municipal"', energy_config)
+        self.assertNotIn('key: "numero_instalacao"', energy_config)
+        self.assertNotIn(
+            'key: "numero_unidade_geradora_consumidora"', energy_config
+        )
+        self.assertIn('newLabel: "Nova unidade de geração"', source)
+        self.assertIn("validMonthlyGeneration", source)
+        self.assertIn("data-cep-status", page)
+        self.assertNotIn('id="cep-lookup-status"', page.split('data-form-section="energia_solar"', 1)[1])
+        self.assertNotIn('key: "adm_propriedade", label: "Cobrança energia solar"', source)
+        self.assertNotIn('sortCellClass(sort, "adm_propriedade")', source)
+        self.assertNotIn("Administração da propriedade", source)
         self.assertIn('<option value="">TODOS</option>', page)
         proprietario_section = page.split('data-form-section="proprietarios"', 1)[1].split(
             'data-form-section="inquilinos"', 1
@@ -476,21 +890,147 @@ class AppCrudTestCase(unittest.TestCase):
         ).get_json()["counts"]
         self.assertEqual(
             (all_counts["imoveis"], all_counts["imoveis_locacao"],
-             all_counts["imoveis_energia_solar"], all_counts["contratos"]),
-            (3, 2, 2, 2),
+             all_counts["imoveis_energia_solar"], all_counts["imoveis_cobranca_solar"],
+             all_counts["contratos"]),
+            (3, 2, 2, 3, 2),
         )
         self.assertEqual(
             (owner_one_counts["imoveis"], owner_one_counts["imoveis_locacao"],
-             owner_one_counts["imoveis_energia_solar"], owner_one_counts["contratos"]),
-            (2, 2, 1, 1),
+             owner_one_counts["imoveis_energia_solar"], owner_one_counts["imoveis_cobranca_solar"],
+             owner_one_counts["contratos"]),
+            (2, 2, 1, 2, 1),
         )
         self.assertEqual(owner_one_counts["proprietarios"], all_counts["proprietarios"])
         self.assertEqual(owner_one_counts["inquilinos_clientes"], all_counts["inquilinos_clientes"])
+
+    def test_global_solar_filter_applies_to_properties_contracts_and_dashboard(self):
+        owner_one = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário Solar Um")
+        ).get_json()
+        owner_two = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietário Solar Dois")
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Solar")
+        ).get_json()
+
+        def create_property(owner_id, name, solar_charge):
+            payload = self.property_payload(owner_id)
+            payload.update({"apelido": name, "adm_propriedade": str(solar_charge)})
+            return self.post_json("/api/imoveis", payload).get_json()
+
+        solar_property_one = create_property(owner_one["id"], "Imóvel Solar Um", 1)
+        non_solar_property = create_property(owner_one["id"], "Imóvel Sem Solar", 0)
+        solar_property_two = create_property(owner_two["id"], "Imóvel Solar Dois", 1)
+
+        contracts = [
+            self.post_json(
+                "/api/contratos",
+                self.contract_payload(property_data["id"], tenant["id"]),
+            ).get_json()
+            for property_data in (
+                solar_property_one,
+                non_solar_property,
+                solar_property_two,
+            )
+        ]
+
+        all_properties = self.client.get("/api/imoveis").get_json()
+        self.assertEqual(len(all_properties), 3)
+        solar_properties = self.client.get(
+            "/api/imoveis", query_string={"adm_propriedade": "SIM"}
+        ).get_json()
+        non_solar_properties = self.client.get(
+            "/api/imoveis", query_string={"adm_propriedade": "NÃO"}
+        ).get_json()
+        self.assertEqual(
+            {record["id"] for record in solar_properties},
+            {solar_property_one["id"], solar_property_two["id"]},
+        )
+        self.assertEqual(
+            {record["id"] for record in non_solar_properties},
+            {non_solar_property["id"]},
+        )
+
+        combined_properties = self.client.get(
+            "/api/imoveis",
+            query_string={
+                "proprietario_id": owner_one["id"],
+                "adm_propriedade": "1",
+            },
+        ).get_json()
+        self.assertEqual(
+            {record["id"] for record in combined_properties},
+            {solar_property_one["id"]},
+        )
+
+        solar_contracts = self.client.get(
+            "/api/contratos", query_string={"adm_propriedade": "1"}
+        ).get_json()
+        self.assertEqual(
+            {record["id"] for record in solar_contracts},
+            {contracts[0]["id"], contracts[2]["id"]},
+        )
+        combined_contracts = self.client.get(
+            "/api/contratos",
+            query_string={
+                "proprietario_id": owner_one["id"],
+                "adm_propriedade": "0",
+            },
+        ).get_json()
+        self.assertEqual(
+            {record["id"] for record in combined_contracts}, {contracts[1]["id"]}
+        )
+
+        all_counts = self.client.get("/api/dashboard").get_json()["counts"]
+        solar_counts = self.client.get(
+            "/api/dashboard", query_string={"adm_propriedade": "1"}
+        ).get_json()["counts"]
+        combined_counts = self.client.get(
+            "/api/dashboard",
+            query_string={
+                "proprietario_id": owner_one["id"],
+                "adm_propriedade": "0",
+            },
+        ).get_json()["counts"]
+        self.assertEqual(
+            (all_counts["imoveis"], all_counts["imoveis_cobranca_solar"], all_counts["contratos"]),
+            (3, 2, 3),
+        )
+        self.assertEqual(
+            (solar_counts["imoveis"], solar_counts["imoveis_cobranca_solar"], solar_counts["contratos"]),
+            (2, 2, 2),
+        )
+        self.assertEqual(
+            (
+                combined_counts["imoveis"],
+                combined_counts["imoveis_cobranca_solar"],
+                combined_counts["contratos"],
+            ),
+            (1, 0, 1),
+        )
+
+        unfiltered = self.client.get(
+            "/api/imoveis", query_string={"proprietario_id": "", "adm_propriedade": ""}
+        ).get_json()
+        self.assertEqual(
+            {record["id"] for record in unfiltered},
+            {record["id"] for record in all_properties},
+        )
 
     def test_global_owner_filter_rejects_invalid_owner_ids(self):
         for endpoint in ("/api/imoveis", "/api/contratos", "/api/dashboard"):
             self.assertEqual(self.client.get(f"{endpoint}?proprietario_id=abc").status_code, 400)
             self.assertEqual(self.client.get(f"{endpoint}?proprietario_id=999").status_code, 400)
+            self.assertEqual(self.client.get(f"{endpoint}?adm_propriedade=maybe").status_code, 400)
+        self.assertEqual(
+            self.client.get("/api/unidades-geracao?proprietario_id=abc").status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.get("/api/unidades-geracao?proprietario_id=999").status_code,
+            400,
+        )
 
     def test_frontend_text_has_no_mojibake_markers(self):
         app_js = Path(__file__).resolve().parents[1] / "static" / "js" / "app.js"
@@ -619,7 +1159,11 @@ class AppCrudTestCase(unittest.TestCase):
         for index, operation_type in enumerate(operations, start=1):
             payload = self.property_payload(owner["id"])
             payload.update(
-                {"tipo_operacao": operation_type, "apelido": f"Contagem {index}"}
+                {
+                    "tipo_operacao": operation_type,
+                    "apelido": f"Contagem {index}",
+                    "adm_propriedade": "1" if index in {1, 3} else "0",
+                }
             )
             self.assertEqual(self.post_json("/api/imoveis", payload).status_code, 201)
 
@@ -627,6 +1171,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(counts["imoveis"], 4)
         self.assertEqual(counts["imoveis_locacao"], 3)
         self.assertEqual(counts["imoveis_energia_solar"], 3)
+        self.assertEqual(counts["imoveis_cobranca_solar"], 2)
 
     def test_data_persists_between_requests(self):
         self.post_json("/api/proprietarios", self.person_payload("Persistente"))
@@ -865,6 +1410,286 @@ class AppCrudTestCase(unittest.TestCase):
             [(1, "ALUGUEL"), (2, "ENERGIA SOLAR")],
         )
         self.assertEqual(client_preserved, ("CLIENTE LEGADO", None))
+
+    def test_existing_database_migrates_generation_units_without_data_loss(self):
+        database = Path(self.temp_dir.name) / "legacy-generation.db"
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE proprietario (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            INSERT INTO proprietario (nome_completo) VALUES ('PROPRIETÁRIO LEGADO');
+            CREATE TABLE inquilinos_clientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            CREATE TABLE imoveis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                apelido TEXT NOT NULL,
+                responsavel INTEGER NOT NULL,
+                cep TEXT,
+                estado TEXT,
+                cidade TEXT,
+                bairro TEXT,
+                numero TEXT,
+                complemento TEXT,
+                inscricao_mun TEXT,
+                aluguel REAL NOT NULL DEFAULT 0,
+                numero_energia TEXT,
+                numero_agua TEXT,
+                adm_propriedade INTEGER NOT NULL DEFAULT 0,
+                energia_solar INTEGER NOT NULL DEFAULT 0,
+                unidade_geradora TEXT,
+                percentual_energia REAL
+            );
+            INSERT INTO imoveis (apelido, responsavel, cidade, aluguel)
+            VALUES ('IMÓVEL PRESERVADO', 1, 'CIDADE LEGADA', 1200);
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        migrated_app = create_app({"TESTING": True, "DATABASE": str(database)})
+        migrated_client = migrated_app.test_client()
+        connection = sqlite3.connect(database)
+        generation_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(unidades_geracao)").fetchall()
+        }
+        preserved_property = connection.execute(
+            "SELECT apelido, cidade, aluguel FROM imoveis WHERE id = 1"
+        ).fetchone()
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        connection.close()
+
+        self.assertIn("unidades_geracao", table_names)
+        self.assertTrue(
+            {
+                "responsavel",
+                "cep",
+                "endereco",
+                "estado",
+                "cidade",
+                "bairro",
+                "numero",
+                "complemento",
+                "inscricao_mun",
+                "numero_instalacao",
+                "numero_unidade_geradora_consumidora",
+                "geracao_mensal_kwh",
+            }.issubset(generation_columns)
+        )
+        self.assertEqual(preserved_property, ("IMÓVEL PRESERVADO", "CIDADE LEGADA", 1200.0))
+
+        created = migrated_client.post(
+            "/api/unidades-geracao",
+            data=json.dumps({"responsavel": 1, "geracao_mensal_kwh": 0}),
+            content_type="application/json",
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.get_json()["geracao_mensal_kwh"], 0)
+
+
+    def test_existing_generation_table_receives_identification_columns(self):
+        database = Path(self.temp_dir.name) / "legacy-generation-columns.db"
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE proprietario (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            INSERT INTO proprietario (nome_completo) VALUES ('OWNER LEGACY');
+            CREATE TABLE inquilinos_clientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome_completo TEXT NOT NULL,
+                rg TEXT,
+                cpf TEXT,
+                contato TEXT,
+                profissao TEXT,
+                estado_civil TEXT,
+                email TEXT
+            );
+            CREATE TABLE imoveis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                apelido TEXT NOT NULL,
+                responsavel INTEGER NOT NULL,
+                cep TEXT,
+                estado TEXT,
+                cidade TEXT,
+                bairro TEXT,
+                numero TEXT,
+                complemento TEXT,
+                inscricao_mun TEXT,
+                aluguel REAL NOT NULL DEFAULT 0,
+                numero_energia TEXT,
+                numero_agua TEXT,
+                adm_propriedade INTEGER NOT NULL DEFAULT 0,
+                energia_solar INTEGER NOT NULL DEFAULT 0,
+                unidade_geradora TEXT,
+                percentual_energia REAL
+            );
+            CREATE TABLE unidades_geracao (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                responsavel INTEGER NOT NULL,
+                cep TEXT,
+                endereco TEXT,
+                estado TEXT,
+                cidade TEXT,
+                bairro TEXT,
+                numero TEXT,
+                complemento TEXT,
+                inscricao_mun TEXT,
+                geracao_mensal_kwh INTEGER
+            );
+            INSERT INTO unidades_geracao
+                (responsavel, cep, endereco, estado, cidade, bairro, numero,
+                 complemento, inscricao_mun, geracao_mensal_kwh)
+            VALUES
+                (1, '01001000', 'RUA LEGADA', 'SP', 'SAO PAULO', 'CENTRO',
+                 '10', 'PORTAO', 'UG-LEGADA', 0);
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        migrated_app = create_app({"TESTING": True, "DATABASE": str(database)})
+        migrated_client = migrated_app.test_client()
+        connection = sqlite3.connect(database)
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(unidades_geracao)").fetchall()
+        }
+        preserved = connection.execute(
+            """
+            SELECT responsavel, cep, endereco, inscricao_mun,
+                   numero_instalacao, numero_unidade_geradora_consumidora,
+                   geracao_mensal_kwh
+            FROM unidades_geracao WHERE id = 1
+            """
+        ).fetchone()
+        connection.close()
+
+        self.assertTrue(
+            {
+                "numero_instalacao",
+                "numero_unidade_geradora_consumidora",
+            }.issubset(columns)
+        )
+        self.assertEqual(
+            preserved,
+            (1, "01001000", "RUA LEGADA", "UG-LEGADA", None, None, 0),
+        )
+        response = migrated_client.get("/api/unidades-geracao/1")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.get_json()["numero_instalacao"])
+        self.assertIsNone(
+            response.get_json()["numero_unidade_geradora_consumidora"]
+        )
+
+    def test_legacy_generation_text_migrates_only_unique_matches(self):
+        database = Path(self.temp_dir.name) / "legacy-generation-links.db"
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE proprietario (
+                id INTEGER PRIMARY KEY, nome_completo TEXT NOT NULL, rg TEXT, cpf TEXT,
+                contato TEXT, profissao TEXT, estado_civil TEXT, email TEXT
+            );
+            INSERT INTO proprietario (id, nome_completo) VALUES (1, 'OWNER');
+            CREATE TABLE inquilinos_clientes (
+                id INTEGER PRIMARY KEY, nome_completo TEXT NOT NULL, rg TEXT, cpf TEXT,
+                contato TEXT, profissao TEXT, estado_civil TEXT, email TEXT
+            );
+            CREATE TABLE imoveis (
+                id INTEGER PRIMARY KEY, apelido TEXT NOT NULL, responsavel INTEGER NOT NULL,
+                cep TEXT, endereco TEXT, estado TEXT, cidade TEXT, bairro TEXT, numero TEXT,
+                complemento TEXT, inscricao_mun TEXT, aluguel REAL NOT NULL DEFAULT 0,
+                numero_energia TEXT, numero_agua TEXT, adm_propriedade INTEGER NOT NULL DEFAULT 0,
+                unidade_geradora TEXT,
+                percentual_energia REAL
+            );
+            INSERT INTO imoveis (id, apelido, responsavel, aluguel, unidade_geradora)
+            VALUES
+                (1, 'MATCH', 1, 1000, 'UG-MATCH'),
+                (2, 'UNKNOWN', 1, 1000, 'UG-UNKNOWN'),
+                (3, 'AMBIGUOUS', 1, 1000, 'UG-DUP');
+            CREATE TABLE unidades_geracao (
+                id INTEGER PRIMARY KEY, responsavel INTEGER NOT NULL,
+                cep TEXT, endereco TEXT, estado TEXT, cidade TEXT, bairro TEXT, numero TEXT,
+                complemento TEXT, inscricao_mun TEXT, geracao_mensal_kwh INTEGER,
+                numero_instalacao TEXT, numero_unidade_geradora_consumidora TEXT
+            );
+            INSERT INTO unidades_geracao
+                (id, responsavel, inscricao_mun, numero_instalacao)
+            VALUES (1, 1, 'UG-MATCH', 'INSTALL-1');
+            INSERT INTO unidades_geracao
+                (id, responsavel, inscricao_mun)
+            VALUES (2, 1, 'UG-DUP'), (3, 1, 'UG-DUP');
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        migrated_app = create_app({"TESTING": True, "DATABASE": str(database)})
+        migrated_client = migrated_app.test_client()
+        records = {
+            record["apelido"]: record
+            for record in migrated_client.get("/api/imoveis").get_json()
+        }
+        self.assertEqual(records["MATCH"]["unidade_geradora_id"], 1)
+        self.assertEqual(records["MATCH"]["unidade_geradora_legada"], "UG-MATCH")
+        self.assertIsNone(records["UNKNOWN"]["unidade_geradora_id"])
+        self.assertEqual(records["UNKNOWN"]["unidade_geradora_legada"], "UG-UNKNOWN")
+        self.assertIsNone(records["AMBIGUOUS"]["unidade_geradora_id"])
+        self.assertEqual(records["AMBIGUOUS"]["unidade_geradora_legada"], "UG-DUP")
+
+        connection = sqlite3.connect(database)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(imoveis)")}
+        foreign_tables = {
+            row[2]
+            for row in connection.execute("PRAGMA foreign_key_list(imovel_unidade_geradora)")
+        }
+        link_count = connection.execute(
+            "SELECT COUNT(*) FROM imovel_unidade_geradora"
+        ).fetchone()[0]
+        connection.close()
+        self.assertIn("unidade_geradora_legada", columns)
+        self.assertNotIn("unidade_geradora", columns)
+        self.assertEqual(foreign_tables, {"imoveis", "unidades_geracao"})
+        self.assertEqual(link_count, 1)
+
+        create_app({"TESTING": True, "DATABASE": str(database)})
+        connection = sqlite3.connect(database)
+        self.assertEqual(
+            connection.execute("SELECT COUNT(*) FROM imovel_unidade_geradora").fetchone()[0],
+            1,
+        )
+        connection.close()
 
 
 if __name__ == "__main__":

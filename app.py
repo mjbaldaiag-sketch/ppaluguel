@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -66,6 +66,7 @@ CONTRACT_STATUSES = (
     "ATIVO",
     "ENCERRADO",
 )
+MAX_MONTHLY_GENERATION_KWH = 9_999_999
 
 PERSON_FIELDS = (
     "nome_completo",
@@ -104,7 +105,7 @@ PROPERTY_FIELDS = (
     "numero_agua",
     "adm_propriedade",
     "tipo_operacao",
-    "unidade_geradora",
+    "unidade_geradora_legada",
     "percentual_energia",
 )
 
@@ -204,7 +205,7 @@ def init_db() -> None:
             tipo_operacao TEXT NOT NULL DEFAULT 'ALUGUEL' CHECK (
                 tipo_operacao IN ('ALUGUEL', 'ENERGIA SOLAR', 'ALUGUEL + ENERGIA SOLAR')
             ),
-            unidade_geradora TEXT,
+            unidade_geradora_legada TEXT,
             percentual_energia REAL CHECK (
                 percentual_energia IS NULL OR
                 (percentual_energia >= 0 AND percentual_energia <= 100)
@@ -215,6 +216,7 @@ def init_db() -> None:
     )
     migrate_database(db)
     normalize_existing_data(db)
+    migrate_legacy_generation_links(db)
     db.commit()
 
 
@@ -224,6 +226,15 @@ def migrate_database(db: sqlite3.Connection) -> None:
     columns = {
         row["name"] for row in db.execute("PRAGMA table_info(imoveis)").fetchall()
     }
+    if "unidade_geradora" in columns and "unidade_geradora_legada" not in columns:
+        db.execute(
+            "ALTER TABLE imoveis RENAME COLUMN unidade_geradora TO unidade_geradora_legada"
+        )
+        columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(imoveis)").fetchall()
+        }
+    if "unidade_geradora_legada" not in columns:
+        db.execute("ALTER TABLE imoveis ADD COLUMN unidade_geradora_legada TEXT")
     client_columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(inquilinos_clientes)").fetchall()
@@ -257,6 +268,60 @@ def migrate_database(db: sqlite3.Connection) -> None:
         db.execute(
             "UPDATE imoveis SET tipo_operacao = 'ALUGUEL' WHERE tipo_operacao IS NULL"
         )
+
+    db.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS unidades_geracao (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            responsavel INTEGER NOT NULL,
+            cep TEXT,
+            endereco TEXT,
+            estado TEXT,
+            cidade TEXT,
+            bairro TEXT,
+            numero TEXT,
+            complemento TEXT,
+            inscricao_mun TEXT,
+            numero_instalacao TEXT,
+            numero_unidade_geradora_consumidora TEXT,
+            geracao_mensal_kwh INTEGER CHECK (
+                geracao_mensal_kwh IS NULL OR (
+                    typeof(geracao_mensal_kwh) = 'integer' AND
+                    geracao_mensal_kwh >= 0 AND
+                    geracao_mensal_kwh <= {MAX_MONTHLY_GENERATION_KWH}
+                )
+            ),
+            FOREIGN KEY (responsavel) REFERENCES proprietario (id) ON DELETE RESTRICT
+        )
+        """
+    )
+
+    generation_columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(unidades_geracao)").fetchall()
+    }
+    if "numero_instalacao" not in generation_columns:
+        db.execute(
+            "ALTER TABLE unidades_geracao ADD COLUMN numero_instalacao TEXT"
+        )
+    if "numero_unidade_geradora_consumidora" not in generation_columns:
+        db.execute(
+            "ALTER TABLE unidades_geracao "
+            "ADD COLUMN numero_unidade_geradora_consumidora TEXT"
+        )
+
+    db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS imovel_unidade_geradora (
+            imovel_id INTEGER PRIMARY KEY,
+            unidade_geradora_id INTEGER NOT NULL,
+            FOREIGN KEY (imovel_id) REFERENCES imoveis (id) ON DELETE CASCADE,
+            FOREIGN KEY (unidade_geradora_id) REFERENCES unidades_geracao (id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_imovel_unidade_geradora_unidade
+            ON imovel_unidade_geradora (unidade_geradora_id);
+        """
+    )
 
     db.execute(
         """
@@ -298,6 +363,50 @@ def migrate_database(db: sqlite3.Connection) -> None:
             """
         )
 
+    db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS contrato_periodos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contrato_id INTEGER NOT NULL,
+            data_inicio TEXT NOT NULL,
+            data_fim TEXT NOT NULL,
+            valor_aluguel REAL NOT NULL CHECK (valor_aluguel >= 0),
+            dia_pagamento INTEGER CHECK (
+                dia_pagamento IS NULL OR (dia_pagamento >= 1 AND dia_pagamento <= 31)
+            ),
+            valor_caucao REAL CHECK (valor_caucao IS NULL OR valor_caucao >= 0),
+            data_pagamento_caucao TEXT,
+            data_fim_anterior TEXT,
+            FOREIGN KEY (contrato_id) REFERENCES contratos (id) ON DELETE CASCADE,
+            CHECK (data_fim >= data_inicio)
+        );
+        CREATE INDEX IF NOT EXISTS idx_contrato_periodos_contrato_inicio
+            ON contrato_periodos (contrato_id, data_inicio, id);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_contrato_periodos_contrato_inicio
+            ON contrato_periodos (contrato_id, data_inicio);
+        INSERT INTO contrato_periodos
+            (contrato_id, data_inicio, data_fim, valor_aluguel, valor_caucao)
+        SELECT c.id, c.data_inicio, c.data_fim, c.valor_aluguel, c.valor_caucao
+        FROM contratos AS c
+        WHERE NOT EXISTS (
+            SELECT 1 FROM contrato_periodos AS cp WHERE cp.contrato_id = c.id
+        );
+        """
+    )
+
+    period_columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(contrato_periodos)").fetchall()
+    }
+    if "dia_pagamento" not in period_columns:
+        db.execute(
+            """
+            ALTER TABLE contrato_periodos ADD COLUMN dia_pagamento INTEGER CHECK (
+                dia_pagamento IS NULL OR (dia_pagamento >= 1 AND dia_pagamento <= 31)
+            )
+            """
+        )
+
 
 def normalize_existing_data(db: sqlite3.Connection) -> None:
     """Normalize text already stored by an earlier version of the app."""
@@ -319,7 +428,19 @@ def normalize_existing_data(db: sqlite3.Connection) -> None:
             "numero_energia",
             "numero_agua",
             "tipo_operacao",
-            "unidade_geradora",
+            "unidade_geradora_legada",
+        ),
+        "unidades_geracao": (
+            "cep",
+            "endereco",
+            "estado",
+            "cidade",
+            "bairro",
+            "numero",
+            "complemento",
+            "inscricao_mun",
+            "numero_instalacao",
+            "numero_unidade_geradora_consumidora",
         ),
     }
     for table, fields in fields_by_table.items():
@@ -333,6 +454,70 @@ def normalize_existing_data(db: sqlite3.Connection) -> None:
                     f"UPDATE {table} SET {assignments} WHERE id = ?",
                     (*values, row["id"]),
                 )
+
+
+def legacy_generation_identifier(value: Any) -> str | None:
+    """Return a safe lookup key for a legacy free-text generation-unit value."""
+
+    if value is None:
+        return None
+    text = repair_text_encoding(str(value)).strip().upper()
+    if not text or any(marker in text for marker in ("\ufffd", "Ã", "Â")):
+        return None
+    if text.startswith("UNIDADE #") and text[9:].strip().isdigit():
+        return text[9:].strip()
+    return text
+
+
+def migrate_legacy_generation_links(db: sqlite3.Connection) -> None:
+    """Convert uniquely identifiable legacy unit text into FK links."""
+
+    identifiers: dict[str, set[int]] = {}
+    units = db.execute(
+        """
+        SELECT u.id, u.inscricao_mun, u.numero_instalacao,
+               u.numero_unidade_geradora_consumidora
+        FROM unidades_geracao AS u
+        JOIN proprietario AS p ON p.id = u.responsavel
+        """
+    ).fetchall()
+    for unit in units:
+        values = [
+            str(unit["id"]),
+            unit["inscricao_mun"],
+            unit["numero_instalacao"],
+            unit["numero_unidade_geradora_consumidora"],
+        ]
+        for value in values:
+            key = legacy_generation_identifier(value)
+            if key:
+                identifiers.setdefault(key, set()).add(unit["id"])
+
+    properties = db.execute(
+        """
+        SELECT i.id, i.unidade_geradora_legada
+        FROM imoveis AS i
+        WHERE i.unidade_geradora_legada IS NOT NULL
+          AND TRIM(i.unidade_geradora_legada) <> ''
+          AND NOT EXISTS (
+              SELECT 1
+              FROM imovel_unidade_geradora AS link
+              WHERE link.imovel_id = i.id
+          )
+        """
+    ).fetchall()
+    for property_row in properties:
+        key = legacy_generation_identifier(property_row["unidade_geradora_legada"])
+        matches = identifiers.get(key, set()) if key else set()
+        if len(matches) == 1:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO imovel_unidade_geradora
+                    (imovel_id, unidade_geradora_id)
+                VALUES (?, ?)
+                """,
+                (property_row["id"], next(iter(matches))),
+            )
 
 
 def error_response(message: str, status: int = 400):
@@ -488,7 +673,9 @@ def client_values(data: dict[str, Any]) -> tuple[Any, ...]:
     return (*values[:4], clean_text(data.get("nome_contato")), *values[4:])
 
 
-def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, ...]:
+def property_values(
+    data: dict[str, Any], db: sqlite3.Connection
+) -> tuple[tuple[Any, ...], int | None]:
     property_type = clean_text(data.get("tipo_imovel"))
     if not property_type:
         raise ValueError("Tipo de imóvel é obrigatório.")
@@ -521,14 +708,97 @@ def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
         if estado not in UF_VALIDAS:
             raise ValueError("Estado inválido.")
 
+    generation_unit_id = optional_foreign_key(
+        data.get("unidade_geradora_id"),
+        "unidade geradora",
+        "unidades_geracao",
+        db,
+    )
+    if generation_unit_id is not None and db.execute(
+        """
+        SELECT 1
+        FROM unidades_geracao AS u
+        JOIN proprietario AS p ON p.id = u.responsavel
+        WHERE u.id = ?
+        """,
+        (generation_unit_id,),
+    ).fetchone() is None:
+        raise ValueError("A unidade geradora selecionada nÃ£o estÃ¡ disponÃ­vel.")
+    if data.get("unidade_geradora") not in (None, ""):
+        raise ValueError(
+            "A unidade geradora deve ser informada pelo identificador da unidade cadastrada."
+        )
+
     rent = parse_decimal(data.get("aluguel"), "Aluguel", required=True)
-    energy_percentage = parse_decimal(data.get("percentual_energia"), "Percentual de energia")
+    energy_percentage = parse_decimal(
+        data.get("percentual_energia"),
+        "Percentual de energia",
+        required=generation_unit_id is not None,
+    )
     if energy_percentage is not None and energy_percentage > 100:
         raise ValueError("Percentual de energia deve estar entre 0 e 100.")
 
     return (
-        property_type,
-        nickname,
+        (
+            property_type,
+            nickname,
+            responsible_id,
+            normalize_digits(data.get("cep"), "cep", {8}),
+            clean_text(data.get("endereco")),
+            estado,
+            clean_text(data.get("cidade")),
+            clean_text(data.get("bairro")),
+            clean_text(data.get("numero")),
+            clean_text(data.get("complemento")),
+            clean_text(data.get("inscricao_mun")),
+            rent,
+            clean_text(data.get("numero_energia")),
+            clean_text(data.get("numero_agua")),
+        parse_boolean(data.get("adm_propriedade"), "Cobrança energia solar"),
+        parse_boolean(data.get("imobiliaria"), "Administração por imobiliária"),
+            operation_type,
+            energy_percentage,
+        ),
+        generation_unit_id,
+    )
+
+
+def parse_monthly_generation(value: Any) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise ValueError("A estimativa de geração mensal deve ser um número inteiro.")
+
+    text = str(value).strip()
+    if not re.fullmatch(r"[0-9]+", text):
+        raise ValueError(
+            "A estimativa de geração mensal deve ser um número inteiro entre 0 e "
+            f"{MAX_MONTHLY_GENERATION_KWH:,}.".replace(",", ".")
+        )
+
+    generation = int(text)
+    if generation > MAX_MONTHLY_GENERATION_KWH:
+        raise ValueError(
+            "A estimativa de geração mensal deve estar entre 0 e "
+            f"{MAX_MONTHLY_GENERATION_KWH:,}.".replace(",", ".")
+        )
+    return generation
+
+
+def generation_unit_values(
+    data: dict[str, Any], db: sqlite3.Connection
+) -> tuple[Any, ...]:
+    responsible_id = parse_foreign_key(
+        data.get("responsavel"), "proprietário", "proprietario", db
+    )
+
+    estado = clean_text(data.get("estado"))
+    if estado:
+        estado = estado.upper()
+        if estado not in UF_VALIDAS:
+            raise ValueError("Estado inválido.")
+
+    return (
         responsible_id,
         normalize_digits(data.get("cep"), "cep", {8}),
         clean_text(data.get("endereco")),
@@ -538,14 +808,9 @@ def property_values(data: dict[str, Any], db: sqlite3.Connection) -> tuple[Any, 
         clean_text(data.get("numero")),
         clean_text(data.get("complemento")),
         clean_text(data.get("inscricao_mun")),
-        rent,
-        clean_text(data.get("numero_energia")),
-        clean_text(data.get("numero_agua")),
-        parse_boolean(data.get("adm_propriedade"), "Administração da propriedade"),
-        parse_boolean(data.get("imobiliaria"), "Administração por imobiliária"),
-        operation_type,
-        clean_text(data.get("unidade_geradora")),
-        energy_percentage,
+        clean_text(data.get("numero_instalacao")),
+        clean_text(data.get("numero_unidade_geradora_consumidora")),
+        parse_monthly_generation(data.get("geracao_mensal_kwh")),
     )
 
 
@@ -568,6 +833,17 @@ def parse_foreign_key(
     return record_id
 
 
+def optional_foreign_key(
+    value: Any,
+    label: str,
+    table: str,
+    db: sqlite3.Connection,
+) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return parse_foreign_key(value, label, table, db)
+
+
 def optional_owner_filter(db: sqlite3.Connection) -> int | None:
     """Parse the shared owner filter, keeping an absent/empty value global."""
 
@@ -575,6 +851,34 @@ def optional_owner_filter(db: sqlite3.Connection) -> int | None:
     if value is None or not str(value).strip():
         return None
     return parse_foreign_key(value, "proprietário", "proprietario", db)
+
+
+def optional_boolean_filter(value: Any, label: str) -> int | None:
+    """Parse an optional boolean query parameter, preserving empty as unfiltered."""
+
+    if value is None or not str(value).strip():
+        return None
+    return parse_boolean(value, label)
+
+
+def property_filter_clause(db: sqlite3.Connection) -> tuple[str, tuple[Any, ...]]:
+    """Build the shared property scope used by the dashboard and property-based lists."""
+
+    owner_id = optional_owner_filter(db)
+    solar_charge = optional_boolean_filter(
+        request.args.get("adm_propriedade"), "Cobrança solar"
+    )
+    conditions = []
+    params: list[Any] = []
+    if owner_id is not None:
+        conditions.append("i.responsavel = ?")
+        params.append(owner_id)
+    if solar_charge is not None:
+        conditions.append("i.adm_propriedade = ?")
+        params.append(solar_charge)
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    return where_clause, tuple(params)
 
 
 def parse_contract_date(value: Any, label: str) -> date:
@@ -632,6 +936,125 @@ def contract_values(
     )
 
 
+def optional_contract_date(value: Any, label: str) -> str | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return parse_contract_date(value, label).isoformat()
+
+
+def parse_contract_payment_day(value: Any, *, required: bool = True) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if required:
+            raise ValueError("Dia de pagamento é obrigatório.")
+        return None
+    if isinstance(value, bool):
+        raise ValueError("Dia de pagamento deve ser um número inteiro entre 1 e 31.")
+
+    if isinstance(value, int):
+        day = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        day = int(value.strip())
+    else:
+        raise ValueError("Dia de pagamento deve ser um número inteiro entre 1 e 31.")
+
+    if not 1 <= day <= 31:
+        raise ValueError("Dia de pagamento deve estar entre 1 e 31.")
+    return day
+
+
+_MISSING = object()
+
+
+def contract_period_values(
+    data: dict[str, Any],
+    *,
+    payment_day_default: Any = _MISSING,
+    payment_day_required: bool = True,
+) -> tuple[Any, ...]:
+    start_date = parse_contract_date(data.get("data_inicio"), "Data de início")
+    end_date = parse_contract_date(data.get("data_fim"), "Data de fim")
+    if end_date < start_date:
+        raise ValueError("A data de fim não pode ser anterior à data de início.")
+
+    if "dia_pagamento" in data:
+        payment_day = parse_contract_payment_day(
+            data.get("dia_pagamento"), required=payment_day_required
+        )
+    elif payment_day_default is not _MISSING:
+        payment_day = payment_day_default
+    else:
+        payment_day = parse_contract_payment_day(None, required=payment_day_required)
+
+    return (
+        start_date.isoformat(),
+        end_date.isoformat(),
+        parse_decimal(data.get("valor_aluguel"), "Valor do aluguel", required=True),
+        payment_day,
+        parse_decimal(data.get("valor_caucao"), "Valor da caução"),
+        optional_contract_date(
+            data.get("data_pagamento_caucao"), "Data de pagamento da caução"
+        ),
+    )
+
+
+def get_contract_periods(db: sqlite3.Connection, contract_id: int) -> list[dict[str, Any]]:
+    rows = db.execute(
+        """
+        SELECT id, contrato_id, data_inicio, data_fim, valor_aluguel, dia_pagamento,
+               valor_caucao, data_pagamento_caucao, data_fim_anterior
+        FROM contrato_periodos
+        WHERE contrato_id = ?
+        ORDER BY data_inicio ASC, id ASC
+        """,
+        (contract_id,),
+    ).fetchall()
+    periods = []
+    for order, row in enumerate(rows, start=1):
+        period = dict(row)
+        period["ordem"] = order
+        period["atual"] = order == len(rows)
+        periods.append(period)
+    return periods
+
+
+def validate_period_timeline(periods: list[sqlite3.Row | dict[str, Any]]) -> None:
+    ordered = sorted(periods, key=lambda period: (period["data_inicio"], period["id"]))
+    for previous, current in zip(ordered, ordered[1:]):
+        if current["data_inicio"] <= previous["data_inicio"]:
+            raise ValueError("A data de início de cada período deve ser posterior à anterior.")
+        if previous["data_fim"] >= current["data_inicio"]:
+            raise ValueError("Os períodos contratuais não podem se sobrepor.")
+
+
+def sync_contract_current_period(db: sqlite3.Connection, contract_id: int) -> None:
+    latest = db.execute(
+        """
+        SELECT data_inicio, data_fim, valor_aluguel, valor_caucao
+        FROM contrato_periodos
+        WHERE contrato_id = ?
+        ORDER BY data_inicio DESC, id DESC
+        LIMIT 1
+        """,
+        (contract_id,),
+    ).fetchone()
+    if latest is None:
+        raise ValueError("O contrato precisa ter ao menos um período.")
+    db.execute(
+        """
+        UPDATE contratos
+        SET data_inicio = ?, data_fim = ?, valor_aluguel = ?, valor_caucao = ?
+        WHERE id = ?
+        """,
+        (
+            latest["data_inicio"],
+            latest["data_fim"],
+            latest["valor_aluguel"],
+            latest["valor_caucao"],
+            contract_id,
+        ),
+    )
+
+
 def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
@@ -643,11 +1066,50 @@ def get_property(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
                i.estado, i.cidade, i.bairro, i.numero, i.complemento,
                i.inscricao_mun, i.aluguel, i.numero_energia, i.numero_agua,
                i.adm_propriedade, i.imobiliaria, i.tipo_operacao,
-               i.unidade_geradora, i.percentual_energia,
+               link.unidade_geradora_id,
+               COALESCE(NULLIF(TRIM(unit.inscricao_mun), ''), 'Unidade #' || unit.id)
+                   AS unidade_geradora_identificacao,
+               i.unidade_geradora_legada, i.percentual_energia,
                p.nome_completo AS responsavel_nome
         FROM imoveis AS i
         JOIN proprietario AS p ON p.id = i.responsavel
+        LEFT JOIN imovel_unidade_geradora AS link ON link.imovel_id = i.id
+        LEFT JOIN unidades_geracao AS unit ON unit.id = link.unidade_geradora_id
         WHERE i.id = ?
+        """,
+        (record_id,),
+    ).fetchone()
+
+
+def sync_property_generation_unit(
+    db: sqlite3.Connection, property_id: int, generation_unit_id: int | None
+) -> None:
+    db.execute(
+        "DELETE FROM imovel_unidade_geradora WHERE imovel_id = ?",
+        (property_id,),
+    )
+    if generation_unit_id is not None:
+        db.execute(
+            """
+            INSERT INTO imovel_unidade_geradora
+                (imovel_id, unidade_geradora_id)
+            VALUES (?, ?)
+            """,
+            (property_id, generation_unit_id),
+        )
+
+
+def get_generation_unit(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
+    return db.execute(
+        """
+        SELECT u.id, u.responsavel, u.cep, u.endereco, u.estado, u.cidade,
+               u.bairro, u.numero, u.complemento, u.inscricao_mun,
+               u.numero_instalacao, u.numero_unidade_geradora_consumidora,
+               u.geracao_mensal_kwh,
+               p.nome_completo AS responsavel_nome
+        FROM unidades_geracao AS u
+        JOIN proprietario AS p ON p.id = u.responsavel
+        WHERE u.id = ?
         """,
         (record_id,),
     ).fetchone()
@@ -656,7 +1118,18 @@ def get_property(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
 def get_contract(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
     return db.execute(
         """
-        SELECT c.*, i.apelido AS imovel_nome,
+        SELECT c.*,
+               (SELECT cp.dia_pagamento
+                FROM contrato_periodos AS cp
+                WHERE cp.contrato_id = c.id
+                ORDER BY cp.data_inicio DESC, cp.id DESC
+                LIMIT 1) AS dia_pagamento,
+               (SELECT cp.data_pagamento_caucao
+                FROM contrato_periodos AS cp
+                WHERE cp.contrato_id = c.id
+                ORDER BY cp.data_inicio DESC, cp.id DESC
+                LIMIT 1) AS data_pagamento_caucao,
+               i.apelido AS imovel_nome,
                ic.nome_completo AS inquilino_nome
         FROM contratos AS c
         JOIN imoveis AS i ON i.id = c.imovel_id
@@ -665,6 +1138,17 @@ def get_contract(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
         """,
         (record_id,),
     ).fetchone()
+
+
+def contract_response(db: sqlite3.Connection, record_id: int) -> dict[str, Any] | None:
+    row = get_contract(db, record_id)
+    if row is None:
+        return None
+    response = row_dict(row)
+    periods = get_contract_periods(db, record_id)
+    response["periodos"] = periods
+    response["periodo_atual_id"] = periods[-1]["id"] if periods else None
+    return response
 
 
 def register_routes(app: Flask) -> None:
@@ -676,45 +1160,46 @@ def register_routes(app: Flask) -> None:
     def dashboard_data():
         db = get_db()
         try:
-            owner_id = optional_owner_filter(db)
+            property_where, property_params = property_filter_clause(db)
         except ValueError as error:
             return error_response(str(error))
 
-        property_where = "WHERE responsavel = ?" if owner_id is not None else ""
-        property_params = (owner_id,) if owner_id is not None else ()
         property_counts = db.execute(
             f"""
             SELECT
                 COUNT(*) AS total,
                 COALESCE(SUM(CASE
-                    WHEN UPPER(COALESCE(tipo_operacao, '')) LIKE '%ALUGUEL%'
+                    WHEN UPPER(COALESCE(i.tipo_operacao, '')) LIKE '%ALUGUEL%'
                     THEN 1 ELSE 0
                 END), 0) AS imoveis_locacao,
                 COALESCE(SUM(CASE
-                    WHEN UPPER(COALESCE(tipo_operacao, '')) LIKE '%ENERGIA SOLAR%'
+                    WHEN UPPER(COALESCE(i.tipo_operacao, '')) LIKE '%ENERGIA SOLAR%'
                     THEN 1 ELSE 0
-                END), 0) AS imoveis_energia_solar
-            FROM imoveis
+                END), 0) AS imoveis_energia_solar,
+                COALESCE(SUM(CASE
+                    WHEN i.adm_propriedade = 1
+                    THEN 1 ELSE 0
+                END), 0) AS imoveis_cobranca_solar
+            FROM imoveis AS i
             {property_where}
             """,
             property_params,
         ).fetchone()
-        contract_where = "WHERE i.responsavel = ?" if owner_id is not None else ""
-        contract_params = (owner_id,) if owner_id is not None else ()
         counts = {
             "proprietarios": db.execute("SELECT COUNT(*) FROM proprietario").fetchone()[0],
             "inquilinos_clientes": db.execute("SELECT COUNT(*) FROM inquilinos_clientes").fetchone()[0],
             "imoveis": property_counts["total"],
             "imoveis_locacao": property_counts["imoveis_locacao"],
             "imoveis_energia_solar": property_counts["imoveis_energia_solar"],
+            "imoveis_cobranca_solar": property_counts["imoveis_cobranca_solar"],
             "contratos": db.execute(
                 f"""
                 SELECT COUNT(*)
                 FROM contratos AS c
                 JOIN imoveis AS i ON i.id = c.imovel_id
-                {contract_where}
+                {property_where}
                 """,
-                contract_params,
+                property_params,
             ).fetchone()[0],
         }
         return jsonify({"counts": counts})
@@ -780,9 +1265,13 @@ def register_routes(app: Flask) -> None:
         linked = db.execute(
             "SELECT COUNT(*) FROM imoveis WHERE responsavel = ?", (record_id,)
         ).fetchone()[0]
-        if linked:
+        linked_generation_units = db.execute(
+            "SELECT COUNT(*) FROM unidades_geracao WHERE responsavel = ?", (record_id,)
+        ).fetchone()[0]
+        if linked or linked_generation_units:
             return error_response(
-                "Este proprietário possui imóveis vinculados. Reassocie-os antes de excluir.",
+                "Este proprietário possui imóveis ou unidades de geração vinculados. "
+                "Reassocie-os antes de excluir.",
                 409,
             )
         db.execute("DELETE FROM proprietario WHERE id = ?", (record_id,))
@@ -870,21 +1359,24 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         if request.method == "GET":
             try:
-                owner_id = optional_owner_filter(db)
+                where_clause, query_params = property_filter_clause(db)
             except ValueError as error:
                 return error_response(str(error))
-            where_clause = "WHERE i.responsavel = ?" if owner_id is not None else ""
-            query_params = (owner_id,) if owner_id is not None else ()
             rows = db.execute(
                 f"""
                 SELECT i.id, i.apelido, i.tipo_imovel, i.responsavel, i.cep, i.endereco,
                        i.estado, i.cidade, i.bairro, i.numero, i.complemento,
                        i.inscricao_mun, i.aluguel, i.numero_energia, i.numero_agua,
                        i.adm_propriedade, i.imobiliaria, i.tipo_operacao,
-                       i.unidade_geradora, i.percentual_energia,
+                       link.unidade_geradora_id,
+                       COALESCE(NULLIF(TRIM(unit.inscricao_mun), ''), 'Unidade #' || unit.id)
+                           AS unidade_geradora_identificacao,
+                       i.unidade_geradora_legada, i.percentual_energia,
                        p.nome_completo AS responsavel_nome
                 FROM imoveis AS i
                 JOIN proprietario AS p ON p.id = i.responsavel
+                LEFT JOIN imovel_unidade_geradora AS link ON link.imovel_id = i.id
+                LEFT JOIN unidades_geracao AS unit ON unit.id = link.unidade_geradora_id
                 {where_clause}
                 ORDER BY i.apelido COLLATE NOCASE
                 """,
@@ -896,21 +1388,26 @@ def register_routes(app: Flask) -> None:
         if data is None:
             return error_response("Envie um objeto JSON válido.")
         try:
-            values = property_values(data, db)
+            values, generation_unit_id = property_values(data, db)
         except ValueError as error:
             return error_response(str(error))
 
-        cursor = db.execute(
-            """
-            INSERT INTO imoveis
-                (tipo_imovel, apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
-                 complemento, inscricao_mun, aluguel, numero_energia, numero_agua,
-                 adm_propriedade, imobiliaria, tipo_operacao, unidade_geradora, percentual_energia)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            values,
-        )
-        db.commit()
+        try:
+            cursor = db.execute(
+                """
+                INSERT INTO imoveis
+                    (tipo_imovel, apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
+                     complemento, inscricao_mun, aluguel, numero_energia, numero_agua,
+                     adm_propriedade, imobiliaria, tipo_operacao, percentual_energia)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            sync_property_generation_unit(db, cursor.lastrowid, generation_unit_id)
+            db.commit()
+        except sqlite3.IntegrityError:
+            db.rollback()
+            return error_response("Nao foi possivel vincular a unidade geradora selecionada.")
         row = get_property(db, cursor.lastrowid)
         return jsonify(row_dict(row)), 201
 
@@ -927,22 +1424,26 @@ def register_routes(app: Flask) -> None:
             if data is None:
                 return error_response("Envie um objeto JSON válido.")
             try:
-                values = property_values(data, db)
+                values, generation_unit_id = property_values(data, db)
             except ValueError as error:
                 return error_response(str(error))
-            db.execute(
-                """
-                UPDATE imoveis
-                SET tipo_imovel = ?, apelido = ?, responsavel = ?, cep = ?, endereco = ?, estado = ?,
-                    cidade = ?, bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
-                    aluguel = ?, numero_energia = ?, numero_agua = ?,
-                    adm_propriedade = ?, imobiliaria = ?, tipo_operacao = ?, unidade_geradora = ?,
-                    percentual_energia = ?
-                WHERE id = ?
-                """,
-                (*values, record_id),
-            )
-            db.commit()
+            try:
+                db.execute(
+                    """
+                    UPDATE imoveis
+                    SET tipo_imovel = ?, apelido = ?, responsavel = ?, cep = ?, endereco = ?, estado = ?,
+                        cidade = ?, bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
+                        aluguel = ?, numero_energia = ?, numero_agua = ?,
+                        adm_propriedade = ?, imobiliaria = ?, tipo_operacao = ?, percentual_energia = ?
+                    WHERE id = ?
+                    """,
+                    (*values, record_id),
+                )
+                sync_property_generation_unit(db, record_id, generation_unit_id)
+                db.commit()
+            except sqlite3.IntegrityError:
+                db.rollback()
+                return error_response("Nao foi possivel vincular a unidade geradora selecionada.")
             updated = get_property(db, record_id)
             return jsonify(row_dict(updated))
 
@@ -958,19 +1459,133 @@ def register_routes(app: Flask) -> None:
         db.commit()
         return ("", 204)
 
-    @app.route("/api/contratos", methods=["GET", "POST"])
-    def contracts_collection():
+    @app.route("/api/unidades-geracao", methods=["GET", "POST"])
+    def generation_units_collection():
         db = get_db()
         if request.method == "GET":
             try:
                 owner_id = optional_owner_filter(db)
             except ValueError as error:
                 return error_response(str(error))
-            where_clause = "WHERE i.responsavel = ?" if owner_id is not None else ""
+
+            where_clause = "WHERE u.responsavel = ?" if owner_id is not None else ""
             query_params = (owner_id,) if owner_id is not None else ()
             rows = db.execute(
                 f"""
-                SELECT c.*, i.apelido AS imovel_nome,
+                SELECT u.id, u.responsavel, u.cep, u.endereco, u.estado, u.cidade,
+                       u.bairro, u.numero, u.complemento, u.inscricao_mun,
+                       u.numero_instalacao, u.numero_unidade_geradora_consumidora,
+                       u.geracao_mensal_kwh,
+                       p.nome_completo AS responsavel_nome
+                FROM unidades_geracao AS u
+                JOIN proprietario AS p ON p.id = u.responsavel
+                {where_clause}
+                ORDER BY u.inscricao_mun COLLATE NOCASE, u.id
+                """,
+                query_params,
+            ).fetchall()
+            return jsonify([row_dict(row) for row in rows])
+
+        data = payload()
+        if data is None:
+            return error_response("Envie um objeto JSON válido.")
+        try:
+            values = generation_unit_values(data, db)
+        except ValueError as error:
+            return error_response(str(error))
+
+        cursor = db.execute(
+            """
+            INSERT INTO unidades_geracao
+                (responsavel, cep, endereco, estado, cidade, bairro, numero,
+                 complemento, inscricao_mun, numero_instalacao,
+                 numero_unidade_geradora_consumidora, geracao_mensal_kwh)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+        db.commit()
+        row = get_generation_unit(db, cursor.lastrowid)
+        return jsonify(row_dict(row)), 201
+
+    @app.route("/api/unidades-geracao/<int:record_id>", methods=["GET", "PUT", "DELETE"])
+    def generation_unit_item(record_id: int):
+        db = get_db()
+        row = get_generation_unit(db, record_id)
+        if row is None:
+            return error_response("Unidade de geração não encontrada.", 404)
+        if request.method == "GET":
+            return jsonify(row_dict(row))
+        if request.method == "PUT":
+            data = payload()
+            if data is None:
+                return error_response("Envie um objeto JSON válido.")
+            try:
+                values = generation_unit_values(data, db)
+            except ValueError as error:
+                return error_response(str(error))
+            db.execute(
+                """
+                UPDATE unidades_geracao
+                SET responsavel = ?, cep = ?, endereco = ?, estado = ?, cidade = ?,
+                    bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
+                    numero_instalacao = ?, numero_unidade_geradora_consumidora = ?,
+                    geracao_mensal_kwh = ?
+                WHERE id = ?
+                """,
+                (*values, record_id),
+            )
+            db.commit()
+            updated = get_generation_unit(db, record_id)
+            return jsonify(row_dict(updated))
+
+        linked = db.execute(
+            "SELECT COUNT(*) FROM imovel_unidade_geradora WHERE unidade_geradora_id = ?",
+            (record_id,),
+        ).fetchone()[0]
+        if linked:
+            return error_response(
+                "Esta unidade geradora possui imóveis vinculados. Remova os vínculos antes de excluir.",
+                409,
+            )
+        try:
+            db.execute("DELETE FROM unidades_geracao WHERE id = ?", (record_id,))
+            db.commit()
+        except sqlite3.IntegrityError:
+            db.rollback()
+            return error_response("NÃ£o foi possÃ­vel excluir a unidade geradora.", 409)
+        return ("", 204)
+
+    @app.route("/api/contratos", methods=["GET", "POST"])
+    def contracts_collection():
+        db = get_db()
+        if request.method == "GET":
+            try:
+                where_clause, query_params = property_filter_clause(db)
+            except ValueError as error:
+                return error_response(str(error))
+            rows = db.execute(
+                f"""
+                SELECT c.*,
+                       (SELECT cp.dia_pagamento
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                        ORDER BY cp.data_inicio DESC, cp.id DESC
+                        LIMIT 1) AS dia_pagamento,
+                       (SELECT cp.data_pagamento_caucao
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                        ORDER BY cp.data_inicio DESC, cp.id DESC
+                        LIMIT 1) AS data_pagamento_caucao,
+                       (SELECT cp.id
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                        ORDER BY cp.data_inicio DESC, cp.id DESC
+                        LIMIT 1) AS periodo_atual_id,
+                       (SELECT COUNT(*)
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id) AS periodos_count,
+                       i.apelido AS imovel_nome,
                        ic.nome_completo AS inquilino_nome
                 FROM contratos AS c
                 JOIN imoveis AS i ON i.id = c.imovel_id
@@ -987,21 +1602,208 @@ def register_routes(app: Flask) -> None:
             return error_response("Envie um objeto JSON válido.")
         try:
             values = contract_values(data, db, status_default="ATIVO")
+            period_values = contract_period_values(data)
         except ValueError as error:
             return error_response(str(error))
 
-        cursor = db.execute(
+        try:
+            cursor = db.execute(
+                """
+                INSERT INTO contratos
+                    (imovel_id, inquilino_id, data_inicio, data_fim,
+                     valor_aluguel, valor_caucao, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            db.execute(
+                """
+                INSERT INTO contrato_periodos
+                    (contrato_id, data_inicio, data_fim, valor_aluguel,
+                     dia_pagamento, valor_caucao, data_pagamento_caucao)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (cursor.lastrowid, *period_values),
+            )
+            db.commit()
+        except sqlite3.Error:
+            db.rollback()
+            return error_response("Não foi possível salvar o período do contrato.", 500)
+        return jsonify(contract_response(db, cursor.lastrowid)), 201
+
+    @app.route("/api/contratos/<int:record_id>/periodos", methods=["GET", "POST"])
+    def contract_periods_collection(record_id: int):
+        db = get_db()
+        if get_contract(db, record_id) is None:
+            return error_response("Contrato não encontrado.", 404)
+        if request.method == "GET":
+            return jsonify(get_contract_periods(db, record_id))
+
+        data = payload()
+        if data is None:
+            return error_response("Envie um objeto JSON válido.")
+        try:
+            values = contract_period_values(data)
+        except ValueError as error:
+            return error_response(str(error))
+
+        previous = db.execute(
             """
-            INSERT INTO contratos
-                (imovel_id, inquilino_id, data_inicio, data_fim,
-                 valor_aluguel, valor_caucao, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            SELECT * FROM contrato_periodos
+            WHERE contrato_id = ?
+            ORDER BY data_inicio DESC, id DESC
+            LIMIT 1
             """,
-            values,
-        )
-        db.commit()
-        row = get_contract(db, cursor.lastrowid)
-        return jsonify(row_dict(row)), 201
+            (record_id,),
+        ).fetchone()
+        if previous is None:
+            return error_response("O contrato precisa ter um período inicial.", 409)
+        if values[0] <= previous["data_inicio"]:
+            return error_response(
+                "A data de início da renovação deve ser posterior à do período anterior."
+            )
+
+        previous_end = previous["data_fim"]
+        last_allowed_end = (date.fromisoformat(values[0]) - timedelta(days=1)).isoformat()
+        finalized_end = min(previous_end, last_allowed_end)
+        try:
+            db.execute(
+                "UPDATE contrato_periodos SET data_fim = ? WHERE id = ?",
+                (finalized_end, previous["id"]),
+            )
+            cursor = db.execute(
+                """
+                INSERT INTO contrato_periodos
+                    (contrato_id, data_inicio, data_fim, valor_aluguel,
+                     dia_pagamento, valor_caucao, data_pagamento_caucao,
+                     data_fim_anterior)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (record_id, *values, previous_end),
+            )
+            db.execute("UPDATE contratos SET status = 'ATIVO' WHERE id = ?", (record_id,))
+            sync_contract_current_period(db, record_id)
+            db.commit()
+        except sqlite3.Error:
+            db.rollback()
+            return error_response("Não foi possível cadastrar a renovação.", 500)
+
+        periods = get_contract_periods(db, record_id)
+        created = next(period for period in periods if period["id"] == cursor.lastrowid)
+        return jsonify(created), 201
+
+    @app.route(
+        "/api/contratos/<int:record_id>/periodos/<int:period_id>",
+        methods=["GET", "PUT", "DELETE"],
+    )
+    def contract_period_item(record_id: int, period_id: int):
+        db = get_db()
+        if get_contract(db, record_id) is None:
+            return error_response("Contrato não encontrado.", 404)
+        period = db.execute(
+            "SELECT * FROM contrato_periodos WHERE id = ? AND contrato_id = ?",
+            (period_id, record_id),
+        ).fetchone()
+        if period is None:
+            return error_response("Período contratual não encontrado.", 404)
+        if request.method == "GET":
+            periods = get_contract_periods(db, record_id)
+            return jsonify(next(item for item in periods if item["id"] == period_id))
+
+        if request.method == "PUT":
+            data = payload()
+            if data is None:
+                return error_response("Envie um objeto JSON válido.")
+            try:
+                values = contract_period_values(
+                    data,
+                    payment_day_default=period["dia_pagamento"],
+                    payment_day_required=period["dia_pagamento"] is not None,
+                )
+            except ValueError as error:
+                return error_response(str(error))
+
+            periods = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM contrato_periodos WHERE contrato_id = ?",
+                    (record_id,),
+                ).fetchall()
+            ]
+            candidate = next(item for item in periods if item["id"] == period_id)
+            (
+                candidate["data_inicio"],
+                candidate["data_fim"],
+                candidate["valor_aluguel"],
+                candidate["dia_pagamento"],
+                candidate["valor_caucao"],
+                candidate["data_pagamento_caucao"],
+            ) = values
+            try:
+                validate_period_timeline(periods)
+            except ValueError as error:
+                return error_response(str(error))
+
+            ordered = sorted(periods, key=lambda item: (item["data_inicio"], item["id"]))
+            try:
+                db.execute(
+                    """
+                    UPDATE contrato_periodos
+                    SET data_inicio = ?, data_fim = ?, valor_aluguel = ?,
+                        dia_pagamento = ?, valor_caucao = ?, data_pagamento_caucao = ?
+                    WHERE id = ? AND contrato_id = ?
+                    """,
+                    (*values, period_id, record_id),
+                )
+                for previous_item, current_item in zip(ordered, ordered[1:]):
+                    db.execute(
+                        "UPDATE contrato_periodos SET data_fim_anterior = ? WHERE id = ?",
+                        (previous_item["data_fim"], current_item["id"]),
+                    )
+                sync_contract_current_period(db, record_id)
+                db.commit()
+            except sqlite3.Error:
+                db.rollback()
+                return error_response("Não foi possível atualizar o período contratual.", 500)
+            updated_periods = get_contract_periods(db, record_id)
+            return jsonify(next(item for item in updated_periods if item["id"] == period_id))
+
+        periods = db.execute(
+            """
+            SELECT * FROM contrato_periodos
+            WHERE contrato_id = ?
+            ORDER BY data_inicio ASC, id ASC
+            """,
+            (record_id,),
+        ).fetchall()
+        if len(periods) <= 1:
+            return error_response("O período inicial não pode ser excluído do contrato.", 409)
+        if periods[-1]["id"] != period_id:
+            return error_response(
+                "Somente a última renovação pode ser revertida para preservar o histórico.",
+                409,
+            )
+
+        previous = periods[-2]
+        restored_end = period["data_fim_anterior"] or previous["data_fim"]
+        if restored_end < previous["data_inicio"] or restored_end >= period["data_inicio"]:
+            restored_end = (date.fromisoformat(period["data_inicio"]) - timedelta(days=1)).isoformat()
+        try:
+            db.execute(
+                "UPDATE contrato_periodos SET data_fim = ? WHERE id = ?",
+                (restored_end, previous["id"]),
+            )
+            db.execute("DELETE FROM contrato_periodos WHERE id = ?", (period_id,))
+            sync_contract_current_period(db, record_id)
+            db.commit()
+        except sqlite3.Error:
+            db.rollback()
+            return error_response("Não foi possível reverter a renovação.", 500)
+        return ("", 204)
+
+    @app.post("/api/contratos/<int:record_id>/periodos/<int:period_id>/reverter")
+    def revert_contract_period(record_id: int, period_id: int):
+        return contract_period_item(record_id, period_id)
 
     @app.route("/api/contratos/<int:record_id>", methods=["GET", "PUT", "DELETE"])
     def contract_item(record_id: int):
@@ -1010,27 +1812,77 @@ def register_routes(app: Flask) -> None:
         if row is None:
             return error_response("Contrato não encontrado.", 404)
         if request.method == "GET":
-            return jsonify(row_dict(row))
+            return jsonify(contract_response(db, record_id))
         if request.method == "PUT":
             data = payload()
             if data is None:
                 return error_response("Envie um objeto JSON válido.")
+            current_period = db.execute(
+                """
+                SELECT id, dia_pagamento FROM contrato_periodos
+                WHERE contrato_id = ?
+                ORDER BY data_inicio DESC, id DESC
+                LIMIT 1
+                """,
+                (record_id,),
+            ).fetchone()
+            if current_period is None:
+                return error_response("O contrato precisa ter um período inicial.", 409)
             try:
                 values = contract_values(data, db, status_default=row["status"] or "ATIVO")
+                period_values = contract_period_values(
+                    data,
+                    payment_day_default=current_period["dia_pagamento"],
+                    payment_day_required=current_period["dia_pagamento"] is not None,
+                )
             except ValueError as error:
                 return error_response(str(error))
-            db.execute(
-                """
-                UPDATE contratos
-                SET imovel_id = ?, inquilino_id = ?, data_inicio = ?, data_fim = ?,
-                    valor_aluguel = ?, valor_caucao = ?, status = ?
-                WHERE id = ?
-                """,
-                (*values, record_id),
+            periods = [
+                dict(item)
+                for item in db.execute(
+                    "SELECT * FROM contrato_periodos WHERE contrato_id = ?",
+                    (record_id,),
+                ).fetchall()
+            ]
+            candidate = next(item for item in periods if item["id"] == current_period["id"])
+            candidate.update(
+                {
+                    "data_inicio": period_values[0],
+                    "data_fim": period_values[1],
+                    "valor_aluguel": period_values[2],
+                    "dia_pagamento": period_values[3],
+                    "valor_caucao": period_values[4],
+                    "data_pagamento_caucao": period_values[5],
+                }
             )
-            db.commit()
-            updated = get_contract(db, record_id)
-            return jsonify(row_dict(updated))
+            try:
+                validate_period_timeline(periods)
+            except ValueError as error:
+                return error_response(str(error))
+            try:
+                db.execute(
+                    """
+                    UPDATE contratos
+                    SET imovel_id = ?, inquilino_id = ?, data_inicio = ?, data_fim = ?,
+                        valor_aluguel = ?, valor_caucao = ?, status = ?
+                    WHERE id = ?
+                    """,
+                    (*values, record_id),
+                )
+                db.execute(
+                    """
+                    UPDATE contrato_periodos
+                    SET data_inicio = ?, data_fim = ?, valor_aluguel = ?,
+                        dia_pagamento = ?, valor_caucao = ?, data_pagamento_caucao = ?
+                    WHERE id = ?
+                    """,
+                    (*period_values, current_period["id"]),
+                )
+                db.commit()
+            except sqlite3.Error:
+                db.rollback()
+                return error_response("Não foi possível atualizar o contrato.", 500)
+            return jsonify(contract_response(db, record_id))
 
         db.execute("DELETE FROM contratos WHERE id = ?", (record_id,))
         db.commit()
