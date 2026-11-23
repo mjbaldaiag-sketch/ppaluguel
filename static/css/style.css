@@ -305,6 +305,14 @@ h2 {
     letter-spacing: -.035em;
 }
 
+.module-title-count {
+    color: #8190a6;
+    font-size: .78em;
+    font-weight: 650;
+    letter-spacing: -.01em;
+    white-space: nowrap;
+}
+
 h3 {
     color: #273248;
     font-size: 14px;
@@ -368,7 +376,7 @@ h3 {
 
 .summary-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 18px;
     width: min(100%, 1120px);
     margin: 43px auto 0;
@@ -398,10 +406,6 @@ h3 {
     background: #eaf8f2;
 }
 
-.summary-card-amber {
-    background: #fff6e8;
-}
-
 .card-icon {
     display: grid;
     width: 46px;
@@ -425,11 +429,6 @@ h3 {
 .summary-card-green .card-icon {
     background: #d3f1e3;
     color: #39ad82;
-}
-
-.summary-card-amber .card-icon {
-    background: #ffe8bd;
-    color: #d2943f;
 }
 
 .card-data {
@@ -461,6 +460,10 @@ h3 {
 }
 
 .property-card-data {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     flex: 1;
     min-width: 0;
 }
@@ -475,28 +478,53 @@ h3 {
     line-height: 1.4;
 }
 
-.property-count-row {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
+.property-card-columns {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
 }
 
-.property-count-row + .property-count-row {
+.property-operation {
+    min-width: 0;
+    padding-right: 14px;
+}
+
+.property-operation + .property-operation {
+    padding-right: 0;
+    padding-left: 14px;
+    border-left: 1px solid rgba(57, 173, 130, .24);
+}
+
+.property-operation h3 {
+    margin: 0 0 8px;
+    color: #52647d;
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.property-metric + .property-metric {
     margin-top: 8px;
 }
 
-.property-count-row > span {
+.property-metric > span {
+    display: block;
     color: #77859a;
     font-size: 9px;
     font-weight: 650;
     line-height: 1.1;
 }
 
-.property-count-row > strong {
-    flex: 0 0 auto;
+.property-metric > strong {
+    display: block;
     margin-top: 0;
-    font-size: 21px;
+    color: #29364f;
+    font-size: 18px;
+    line-height: 1.15;
+    letter-spacing: -.03em;
+}
+
+.property-metric > span + strong {
+    margin-top: 3px;
 }
 
 .module-section {
@@ -1529,6 +1557,14 @@ h3 {
     .card-data > span {
         font-size: 10px;
     }
+
+    .property-operation {
+        padding-right: 10px;
+    }
+
+    .property-operation + .property-operation {
+        padding-left: 10px;
+    }
 }
 
 @media (max-width: 1000px) {
@@ -1628,6 +1664,22 @@ h3 {
 
     .summary-card {
         min-height: 104px;
+    }
+
+    .property-card-columns {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .property-operation,
+    .property-operation + .property-operation {
+        padding: 0;
+    }
+
+    .property-operation + .property-operation {
+        padding-top: 12px;
+        border-top: 1px solid rgba(57, 173, 130, .24);
+        border-left: 0;
     }
 
     .module-section {

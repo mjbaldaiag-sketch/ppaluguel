@@ -99,26 +99,38 @@
                     <div class="card-icon" aria-hidden="true">▦</div>
                     <div class="card-data property-card-data">
                         <span class="property-card-title">Imóveis</span>
-                        <div class="property-count-row">
-                            <span>TOTAL LOCAÇÃO</span>
-                            <strong id="count-imoveis-locacao">0</strong>
+                        <div class="property-card-columns">
+                            <section class="property-operation" aria-labelledby="property-rental-title">
+                                <h3 id="property-rental-title">Locação</h3>
+                                <div class="property-metric">
+                                    <span>Total imóveis geridos</span>
+                                    <strong id="count-imoveis-locacao">0</strong>
+                                </div>
+                                <div class="property-metric">
+                                    <span>Imóveis alugados/total</span>
+                                    <strong><span id="count-imoveis-alugados">0</span> de <span id="count-imoveis-locacao-total">0</span></strong>
+                                </div>
+                                <div class="property-metric">
+                                    <span>Taxa de ocupação</span>
+                                    <strong id="rate-imoveis-ocupacao">0%</strong>
+                                </div>
+                            </section>
+                            <section class="property-operation" aria-labelledby="property-solar-title">
+                                <h3 id="property-solar-title">Energia Solar</h3>
+                                <div class="property-metric">
+                                    <span>Total imóveis geridos</span>
+                                    <strong id="count-imoveis-energia-solar">0</strong>
+                                </div>
+                                <div class="property-metric">
+                                    <span>Energia cobrada/total</span>
+                                    <strong><span id="count-imoveis-cobranca-solar">0</span> de <span id="count-imoveis-energia-solar-total">0</span></strong>
+                                </div>
+                                <div class="property-metric">
+                                    <span>Taxa de cobrança</span>
+                                    <strong id="rate-imoveis-cobranca-solar">0%</strong>
+                                </div>
+                            </section>
                         </div>
-                        <div class="property-count-row">
-                            <span>TOTAL ENERGIA SOLAR</span>
-                            <strong id="count-imoveis-energia-solar">0</strong>
-                        </div>
-                        <div class="property-count-row">
-                            <span>TOTAL COBRANÇA SOLAR</span>
-                            <strong id="count-imoveis-cobranca-solar">0</strong>
-                        </div>
-                    </div>
-                </article>
-                <article class="summary-card summary-card-amber">
-                    <div class="card-icon" aria-hidden="true">C</div>
-                    <div class="card-data">
-                        <span>Contratos</span>
-                        <strong id="count-contratos">0</strong>
-                        <small>aluguéis cadastrados</small>
                     </div>
                 </article>
             </section>
@@ -127,7 +139,7 @@
                 <div class="module-heading">
                     <div>
                         <span class="eyebrow">Cadastros</span>
-                        <h2 id="module-title">Proprietários</h2>
+                        <h2 id="module-title"><span id="module-title-label">Proprietários</span> <span id="module-title-count" class="module-title-count">(0)</span></h2>
                         <p id="module-description">Gerencie as pessoas responsáveis pelos seus imóveis.</p>
                     </div>
                     <div class="module-meta">
@@ -436,6 +448,28 @@
                     <label class="form-field">
                         <span id="percentual-energia-label">Percentual de energia</span>
                         <input type="number" data-field="percentual_energia" min="0" max="100" step="0.01" placeholder="0,00">
+                    </label>
+                    <label class="form-field">
+                        <span>Repasse IPTU</span>
+                        <select data-field="repasse_iptu">
+                            <option value="0">Não</option>
+                            <option value="1">Sim</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Valor IPTU</span>
+                        <input type="text" data-field="valor_iptu" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
+                    </label>
+                    <label class="form-field">
+                        <span>Repasse tx. condomínio</span>
+                        <select data-field="repasse_taxa_condominio">
+                            <option value="0">Não</option>
+                            <option value="1">Sim</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Valor condomínio</span>
+                        <input type="text" data-field="valor_condominio" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
                     </label>
                 </div>
             </div>

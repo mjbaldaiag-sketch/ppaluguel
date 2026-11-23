@@ -206,6 +206,8 @@
         elements.navItems = document.querySelectorAll("[data-module]");
         elements.breadcrumbModule = document.getElementById("breadcrumb-module");
         elements.moduleTitle = document.getElementById("module-title");
+        elements.moduleTitleLabel = document.getElementById("module-title-label");
+        elements.moduleTitleCount = document.getElementById("module-title-count");
         elements.moduleDescription = document.getElementById("module-description");
         elements.ownerFilter = document.getElementById("owner-filter");
         elements.newRecordButton = document.getElementById("new-record-button");
@@ -390,9 +392,13 @@
             document.getElementById("count-proprietarios").textContent = counts.proprietarios || 0;
             document.getElementById("count-inquilinos").textContent = counts.inquilinos_clientes || 0;
             document.getElementById("count-imoveis-locacao").textContent = counts.imoveis_locacao || 0;
+            document.getElementById("count-imoveis-locacao-total").textContent = counts.imoveis_locacao || 0;
+            document.getElementById("count-imoveis-alugados").textContent = counts.imoveis_alugados || 0;
+            document.getElementById("rate-imoveis-ocupacao").textContent = `${counts.taxa_ocupacao || 0}%`;
             document.getElementById("count-imoveis-cobranca-solar").textContent = counts.imoveis_cobranca_solar || 0;
             document.getElementById("count-imoveis-energia-solar").textContent = counts.imoveis_energia_solar || 0;
-            document.getElementById("count-contratos").textContent = counts.contratos || 0;
+            document.getElementById("count-imoveis-energia-solar-total").textContent = counts.imoveis_energia_solar || 0;
+            document.getElementById("rate-imoveis-cobranca-solar").textContent = `${counts.taxa_cobranca_solar || 0}%`;
         } catch (error) {
             showToast(error.message, "error");
         }
@@ -458,7 +464,7 @@
             if (requestId !== state.moduleRequestId || state.module !== moduleName) {
                 return;
             }
-            state.records = Array.isArray(records) ? records : [];
+            state.records = uniqueRecordsById(Array.isArray(records) ? records : []);
             renderTable();
         } catch (error) {
             if (requestId !== state.moduleRequestId || state.module !== moduleName) {
@@ -498,7 +504,7 @@
         elements.emptyAction.dataset.module = moduleName;
         elements.navItems.forEach((item) => item.classList.toggle("is-active", item.dataset.module === moduleName));
         elements.breadcrumbModule.textContent = config.title;
-        elements.moduleTitle.textContent = config.title;
+        updateModuleTitle(config.title, 0);
         elements.moduleDescription.textContent = config.description;
         elements.newRecordLabel.textContent = config.newLabel || `Novo ${config.singular}`;
         setTableMode();
@@ -509,6 +515,26 @@
         const isContracts = state.module === "contratos";
         elements.recordsTableCard.hidden = isContracts;
         elements.contractsTables.hidden = !isContracts;
+    }
+
+    function updateModuleTitle(title, count) {
+        elements.moduleTitleLabel.textContent = title;
+        elements.moduleTitleCount.textContent = `(${count})`;
+    }
+
+    function uniqueRecordsById(records) {
+        const seenIds = new Set();
+        return records.filter((record) => {
+            if (!record || record.id === null || record.id === undefined) {
+                return true;
+            }
+            const recordId = String(record.id);
+            if (seenIds.has(recordId)) {
+                return false;
+            }
+            seenIds.add(recordId);
+            return true;
+        });
     }
 
     function withPropertyFilters(endpoint, context) {
@@ -543,6 +569,7 @@
     function renderTable() {
         const config = moduleConfig[state.module];
         const sort = state.sortByModule[state.module] || null;
+        updateModuleTitle(config.title, state.records.length);
         if (state.module === "contratos") {
             renderContractsTables(config, sort);
             return;
@@ -1004,7 +1031,7 @@
         elements.distributionTotalPercentage.textContent = formatDistributionPercentage(
             distributionTotals.percentual_distribuicao,
         );
-        elements.distributionTotalKwh.textContent = formatEstimatedKwh(
+        elements.distributionTotalKwh.textContent = formatEstimatedKwhTotal(
             distributionTotals.kwh_mes_estimado,
         );
         elements.billingTotalKwh.textContent = formatEstimatedKwh(
@@ -1019,7 +1046,7 @@
             "Nenhum imóvel vinculado com cliente e percentual de energia cadastrados.",
         );
         elements.billingTableBody.innerHTML = renderBillingRows(
-            billings,
+            sortBillingRowsByAmount(billings),
             "Nenhum imóvel com Cobrança solar igual a SIM.",
         );
         renderDistributionChart(sortedDistributions);
@@ -1029,7 +1056,7 @@
         elements.distributionTableCount.textContent = formatPropertyCount(0);
         elements.billingTableCount.textContent = formatPropertyCount(0);
         elements.distributionTotalPercentage.textContent = formatDistributionPercentage(0);
-        elements.distributionTotalKwh.textContent = formatEstimatedKwh(0);
+        elements.distributionTotalKwh.textContent = formatEstimatedKwhTotal(0);
         elements.billingTotalKwh.textContent = formatEstimatedKwh(0);
         elements.billingTotalAmount.textContent = formatCurrency("0.00");
     }
@@ -1062,6 +1089,34 @@
                 <td>${formatCurrency(billing.valor_mensal)}</td>
             </tr>`;
         }).join("");
+    }
+
+    function billingAmountSortValue(value) {
+        if (value === null || value === undefined || value === "") {
+            return null;
+        }
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+    }
+
+    function sortBillingRowsByAmount(billings) {
+        return billings
+            .map((billing, index) => ({ billing, index }))
+            .sort((first, second) => {
+                const firstValue = billingAmountSortValue(first.billing.valor_mensal);
+                const secondValue = billingAmountSortValue(second.billing.valor_mensal);
+                if (firstValue === null && secondValue === null) {
+                    return first.index - second.index;
+                }
+                if (firstValue === null) {
+                    return 1;
+                }
+                if (secondValue === null) {
+                    return -1;
+                }
+                return secondValue - firstValue || first.index - second.index;
+            })
+            .map(({ billing }) => billing);
     }
 
     function formatPropertyCount(value) {
@@ -1240,6 +1295,8 @@
                 const selectDefaults = {
                     adm_propriedade: "0",
                     imobiliaria: "0",
+                    repasse_iptu: "0",
+                    repasse_taxa_condominio: "0",
                     tipo_operacao: "ALUGUEL",
                     status: "ATIVO",
                 };
@@ -2049,6 +2106,11 @@
         return new Intl.NumberFormat("pt-BR", {
             maximumFractionDigits: 0,
         }).format(Number(value));
+    }
+
+    function formatEstimatedKwhTotal(value) {
+        const formatted = formatEstimatedKwh(value);
+        return formatted === "—" ? formatted : `${formatted} kWh`;
     }
 
     function formatDate(value) {

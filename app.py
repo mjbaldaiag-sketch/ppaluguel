@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import sqlite3
 from datetime import date, timedelta
@@ -10,14 +11,20 @@ from typing import Any
 from xml.sax.saxutils import escape as escape_xml
 
 from flask import Flask, current_app, g, jsonify, render_template, request, send_file
-from reportlab.graphics.charts.piecharts import Pie
-from reportlab.graphics.shapes import Drawing
+from reportlab.graphics.shapes import Drawing, Line, String, Wedge
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4, portrait
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    KeepInFrame,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -223,6 +230,12 @@ def init_db() -> None:
                 (percentual_energia >= 0 AND percentual_energia <= 100)
             ),
             cliente_energia_solar_id INTEGER,
+            repasse_iptu INTEGER NOT NULL DEFAULT 0 CHECK (repasse_iptu IN (0, 1)),
+            valor_iptu REAL CHECK (valor_iptu IS NULL OR valor_iptu >= 0),
+            repasse_taxa_condominio INTEGER NOT NULL DEFAULT 0 CHECK (
+                repasse_taxa_condominio IN (0, 1)
+            ),
+            valor_condominio REAL CHECK (valor_condominio IS NULL OR valor_condominio >= 0),
             FOREIGN KEY (cliente_energia_solar_id)
                 REFERENCES inquilinos_clientes (id) ON DELETE RESTRICT,
             FOREIGN KEY (responsavel) REFERENCES proprietario (id) ON DELETE RESTRICT
@@ -271,6 +284,26 @@ def migrate_database(db: sqlite3.Connection) -> None:
         db.execute(
             "ALTER TABLE imoveis ADD COLUMN cliente_energia_solar_id INTEGER "
             "REFERENCES inquilinos_clientes (id) ON DELETE RESTRICT"
+        )
+    if "repasse_iptu" not in columns:
+        db.execute(
+            "ALTER TABLE imoveis ADD COLUMN repasse_iptu INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (repasse_iptu IN (0, 1))"
+        )
+    if "valor_iptu" not in columns:
+        db.execute(
+            "ALTER TABLE imoveis ADD COLUMN valor_iptu REAL "
+            "CHECK (valor_iptu IS NULL OR valor_iptu >= 0)"
+        )
+    if "repasse_taxa_condominio" not in columns:
+        db.execute(
+            "ALTER TABLE imoveis ADD COLUMN repasse_taxa_condominio INTEGER "
+            "NOT NULL DEFAULT 0 CHECK (repasse_taxa_condominio IN (0, 1))"
+        )
+    if "valor_condominio" not in columns:
+        db.execute(
+            "ALTER TABLE imoveis ADD COLUMN valor_condominio REAL "
+            "CHECK (valor_condominio IS NULL OR valor_condominio >= 0)"
         )
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_imoveis_cliente_energia_solar "
@@ -650,7 +683,13 @@ def normalize_email(value: Any) -> str | None:
     return email
 
 
-def parse_decimal(value: Any, label: str, *, required: bool = False) -> float | None:
+def parse_decimal(
+    value: Any,
+    label: str,
+    *,
+    required: bool = False,
+    max_decimal_places: int | None = None,
+) -> float | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         if required:
             raise ValueError(f"{label} é obrigatório.")
@@ -666,6 +705,15 @@ def parse_decimal(value: Any, label: str, *, required: bool = False) -> float | 
         number = Decimal(text)
     except (InvalidOperation, ValueError):
         raise ValueError(f"{label} deve ser um número válido.") from None
+
+    if max_decimal_places is not None:
+        if not number.is_finite():
+            raise ValueError(f"{label} deve ser um número válido.")
+        normalized = number.normalize()
+        if normalized.as_tuple().exponent < -max_decimal_places:
+            raise ValueError(
+                f"{label} pode ter no máximo {max_decimal_places} casas decimais."
+            )
 
     if number < 0:
         raise ValueError(f"{label} não pode ser negativo.")
@@ -825,6 +873,16 @@ def property_values(
         )
 
     rent = parse_decimal(data.get("aluguel"), "Aluguel", required=True)
+    iptu_value = parse_decimal(
+        data.get("valor_iptu"),
+        "Valor IPTU",
+        max_decimal_places=2,
+    )
+    condominium_value = parse_decimal(
+        data.get("valor_condominio"),
+        "Valor condomínio",
+        max_decimal_places=2,
+    )
     energy_percentage = parse_decimal(
         data.get("percentual_energia"),
         "Percentual de energia",
@@ -854,6 +912,13 @@ def property_values(
             operation_type,
             energy_percentage,
             solar_client_id,
+            parse_boolean(data.get("repasse_iptu"), "Repasse IPTU"),
+            iptu_value,
+            parse_boolean(
+                data.get("repasse_taxa_condominio"),
+                "Repasse taxa de condomínio",
+            ),
+            condominium_value,
         ),
         generation_unit_id,
     )
@@ -1176,6 +1241,8 @@ def get_property(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
                    AS unidade_geradora_identificacao,
                i.unidade_geradora_legada, i.percentual_energia,
                i.cliente_energia_solar_id,
+               i.repasse_iptu, i.valor_iptu,
+               i.repasse_taxa_condominio, i.valor_condominio,
                p.nome_completo AS responsavel_nome
         FROM imoveis AS i
         JOIN proprietario AS p ON p.id = i.responsavel
@@ -1381,6 +1448,28 @@ def pdf_integer(value: Any) -> str:
     return f"{int(value):,}".replace(",", ".")
 
 
+def pdf_kwh_total(value: Any) -> str:
+    try:
+        formatted = pdf_integer(value)
+    except (TypeError, ValueError):
+        return "—"
+    return formatted if formatted == "—" else f"{formatted} kWh"
+
+
+def pdf_billing_sort_key(item: tuple[int, dict[str, Any]]) -> tuple[int, Decimal, int]:
+    index, billing = item
+    raw_value = billing.get("valor_mensal")
+    if raw_value is None or raw_value == "":
+        return (1, Decimal("0"), index)
+    try:
+        amount = Decimal(str(raw_value))
+    except (InvalidOperation, TypeError, ValueError):
+        return (1, Decimal("0"), index)
+    if not amount.is_finite():
+        return (1, Decimal("0"), index)
+    return (0, -amount, index)
+
+
 def pdf_percentage(value: Any) -> str:
     if value is None:
         return "—"
@@ -1397,59 +1486,485 @@ def pdf_currency(value: Any) -> str:
 
 
 def pdf_paragraph(text: str, style: ParagraphStyle) -> Paragraph:
-    return Paragraph(escape_xml(str(text)), style)
+    escaped = escape_xml(str(text)).replace("\n", "<br/>")
+    return Paragraph(escaped, style)
+
+
+PDF_DISTRIBUTION_COLORS = (
+    "#4f63d9",
+    "#36a77d",
+    "#d9a83d",
+    "#d95b67",
+    "#8d6ac8",
+    "#4aa9c8",
+    "#d17a4f",
+    "#6f7f9d",
+)
+
+
+def pdf_distribution_value(value: Any) -> float:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(number, 0.0)
+
+
+def pdf_distribute_label_positions(
+    labels: list[dict[str, Any]],
+    side: str,
+    chart_height: float,
+    label_margin: float,
+    label_gap: float,
+) -> None:
+    side_labels = sorted(
+        (label for label in labels if label["side"] == side),
+        key=lambda label: label["target_y"],
+    )
+    next_y = label_margin
+    for label in side_labels:
+        label["label_y"] = max(label["target_y"], next_y)
+        next_y = label["label_y"] + label_gap
+
+    if not side_labels:
+        return
+
+    bottom_overflow = next_y - label_gap - (chart_height - label_margin)
+    if bottom_overflow > 0:
+        for label in side_labels:
+            label["label_y"] -= bottom_overflow
+
+    top_overflow = label_margin - side_labels[0]["label_y"]
+    if top_overflow > 0:
+        for label in side_labels:
+            label["label_y"] += top_overflow
+
+
+def build_distribution_chart(
+    distributions: list[dict[str, Any]], width: float
+) -> Drawing | None:
+    positive_distributions = [
+        (index, item, pdf_distribution_value(item.get("percentual_distribuicao")))
+        for index, item in enumerate(distributions)
+        if pdf_distribution_value(item.get("percentual_distribuicao")) > 0
+    ]
+    if not positive_distributions:
+        return None
+
+    chart_width = max(width, 300)
+    chart_scale = min(0.7, chart_width / 520.0)
+    base_size = 520.0
+    radius = 150.0 * chart_scale
+    label_radius = 220.0 * chart_scale
+    label_gap = 20.0 * chart_scale
+    label_horizontal_gap = 20.0 * chart_scale
+    label_font_size = max(6.4, 11.5 * chart_scale)
+    label_margin = max(3.0 * chart_scale, label_font_size)
+    side_counts = {"left": 0, "right": 0}
+    total = sum(value for _, _, value in positive_distributions)
+    accumulated = 0.0
+    for _, _, value in positive_distributions:
+        sweep = value / total * 360.0
+        mid_angle = (accumulated + sweep / 2) * math.pi / 180.0
+        side = "left" if math.sin(mid_angle) < 0 else "right"
+        side_counts[side] += 1
+        accumulated += sweep
+    max_side_count = max(max(side_counts.values()), 1)
+    chart_height = max(
+        base_size * chart_scale,
+        max_side_count * label_gap + label_margin * 2,
+    )
+    center_x = chart_width / 2
+    center_y = chart_height / 2
+
+    labels: list[dict[str, Any]] = []
+    accumulated = 0.0
+    drawing = Drawing(chart_width, chart_height)
+    for index, item, value in positive_distributions:
+        sweep = value / total * 360.0
+        mid_angle = (accumulated + sweep / 2) * math.pi / 180.0
+        # PDF coordinates grow upward; invert Y so the chart starts at the top
+        # and advances clockwise, matching the modal's SVG chart.
+        target_x = center_x + math.sin(mid_angle) * label_radius
+        target_y = center_y + math.cos(mid_angle) * label_radius
+        side = "left" if target_x < center_x else "right"
+        labels.append(
+            {
+                "index": index,
+                "item": item,
+                "value": value,
+                "side": side,
+                "target_y": target_y,
+                "label_y": target_y,
+            }
+        )
+        start_angle = 90.0 - accumulated - sweep
+        end_angle = 90.0 - accumulated
+        slice_offset = 6.0 * chart_scale
+        drawing.add(
+            Wedge(
+                center_x + math.sin(mid_angle) * slice_offset,
+                center_y + math.cos(mid_angle) * slice_offset,
+                radius,
+                start_angle,
+                end_angle,
+                fillColor=colors.HexColor(
+                    PDF_DISTRIBUTION_COLORS[index % len(PDF_DISTRIBUTION_COLORS)]
+                ),
+                strokeColor=colors.white,
+                strokeWidth=1.2,
+            )
+        )
+        accumulated += sweep
+
+    pdf_distribute_label_positions(
+        labels,
+        "left",
+        chart_height,
+        label_margin,
+        label_gap,
+    )
+    pdf_distribute_label_positions(
+        labels,
+        "right",
+        chart_height,
+        label_margin,
+        label_gap,
+    )
+
+    accumulated = 0.0
+    for label in labels:
+        is_left = label["side"] == "left"
+        text_x = (
+            center_x - radius - label_horizontal_gap
+            if is_left
+            else center_x + radius + label_horizontal_gap
+        )
+        elbow_x = (
+            center_x - radius - 8.0 * chart_scale
+            if is_left
+            else center_x + radius + 8.0 * chart_scale
+        )
+        line_end_x = text_x + 4.0 * chart_scale if is_left else text_x - 4.0 * chart_scale
+        value = label["value"]
+        item = label["item"]
+        mid_angle = (accumulated + value / 2) / total * 2 * math.pi
+        target_x = center_x + math.sin(mid_angle) * (radius + 4.0 * chart_scale)
+        target_y = center_y + math.cos(mid_angle) * (radius + 4.0 * chart_scale)
+        stroke = colors.HexColor(
+            PDF_DISTRIBUTION_COLORS[label["index"] % len(PDF_DISTRIBUTION_COLORS)]
+        )
+        drawing.add(
+            Line(
+                target_x,
+                target_y,
+                elbow_x,
+                label["label_y"],
+                strokeColor=stroke,
+                strokeWidth=0.7,
+            )
+        )
+        drawing.add(
+            Line(
+                elbow_x,
+                label["label_y"],
+                line_end_x,
+                label["label_y"],
+                strokeColor=stroke,
+                strokeWidth=0.7,
+            )
+        )
+        drawing.add(
+            String(
+                text_x,
+                label["label_y"] - label_font_size / 3,
+                f"{pdf_first_client_name(item.get('cliente_nome'))} · {pdf_percentage(value)}",
+                fontName="Helvetica-Bold",
+                fontSize=label_font_size,
+                fillColor=colors.HexColor("#536076"),
+                textAnchor="end" if is_left else "start",
+            )
+        )
+        accumulated += value
+    return drawing
+
+
+def build_pdf_legend(
+    distributions: list[dict[str, Any]],
+    width: float,
+    style: ParagraphStyle,
+) -> Table | Paragraph:
+    entries = [
+        (index, item, pdf_distribution_value(item.get("percentual_distribuicao")))
+        for index, item in enumerate(distributions)
+    ]
+    if not entries:
+        return pdf_paragraph(
+            "Nenhum imóvel vinculado com cliente e percentual de energia cadastrados.",
+            style,
+        )
+
+    item_width = max((width - 8) / 2, 90)
+    legend_rows: list[list[Table | Spacer]] = []
+    for row_start in range(0, len(entries), 2):
+        row: list[Table | Spacer] = []
+        for index, item, value in entries[row_start:row_start + 2]:
+            marker = Table(
+                [[
+                    "",
+                    pdf_paragraph(
+                        f"{pdf_first_client_name(item.get('cliente_nome'))} {pdf_percentage(value)}",
+                        style,
+                    ),
+                ]],
+                colWidths=[7, item_width - 7],
+            )
+            marker.setStyle(
+                TableStyle(
+                    [
+                        (
+                            "BACKGROUND",
+                            (0, 0),
+                            (0, 0),
+                            colors.HexColor(
+                                PDF_DISTRIBUTION_COLORS[
+                                    index % len(PDF_DISTRIBUTION_COLORS)
+                                ]
+                            ),
+                        ),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("LEFTPADDING", (0, 0), (0, 0), 0),
+                        ("RIGHTPADDING", (0, 0), (0, 0), 0),
+                        ("TOPPADDING", (0, 0), (0, 0), 0),
+                        ("BOTTOMPADDING", (0, 0), (0, 0), 0),
+                        ("LEFTPADDING", (1, 0), (1, 0), 5),
+                        ("RIGHTPADDING", (1, 0), (1, 0), 0),
+                        ("TOPPADDING", (1, 0), (1, 0), 1),
+                        ("BOTTOMPADDING", (1, 0), (1, 0), 1),
+                    ]
+                )
+            )
+            row.append(marker)
+        if len(row) == 1:
+            row.append(Spacer(item_width, 1))
+        legend_rows.append(row)
+
+    legend = Table(legend_rows, colWidths=[item_width, item_width], hAlign="LEFT")
+    legend.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return legend
+
+
+def build_pdf_panel(content: list[Any], width: float) -> Table:
+    panel = Table([[item] for item in content], colWidths=[width], hAlign="LEFT")
+    panel.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fbfcfe")),
+                ("BOX", (0, 0), (-1, -1), 0.55, colors.HexColor("#e5eaf2")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    return panel
+
+
+def build_pdf_table(
+    rows: list[list[str]],
+    widths: list[float],
+    *,
+    header_style: ParagraphStyle,
+    body_style: ParagraphStyle,
+    total_style: ParagraphStyle,
+    empty_message: str | None = None,
+) -> Table:
+    header = [pdf_paragraph(value, header_style) for value in rows[0]]
+    body = [
+        [pdf_paragraph(value, body_style) for value in row]
+        for row in rows[1:-1]
+    ]
+    empty_row_index: int | None = None
+    if empty_message is not None:
+        empty_row_index = len(body) + 1
+        body.append(
+            [
+                pdf_paragraph(empty_message, body_style),
+                "",
+                "",
+            ]
+        )
+    total = [pdf_paragraph(value, total_style) for value in rows[-1]]
+    table_rows = [header, *body, total]
+    total_row_index = len(table_rows) - 1
+    table = Table(
+        table_rows,
+        colWidths=widths,
+        repeatRows=1,
+        hAlign="LEFT",
+        splitByRow=0,
+    )
+    commands: list[tuple[Any, ...]] = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2f8")),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#dfe6f0")),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("BACKGROUND", (0, total_row_index), (-1, total_row_index), colors.HexColor("#f1f5fa")),
+        ("LINEABOVE", (0, total_row_index), (-1, total_row_index), 1, colors.HexColor("#bfcbdc")),
+    ]
+    if empty_row_index is not None:
+        commands.extend(
+            [
+                ("SPAN", (0, empty_row_index), (-1, empty_row_index)),
+                ("ALIGN", (0, empty_row_index), (-1, empty_row_index), "CENTER"),
+                ("TEXTCOLOR", (0, empty_row_index), (-1, empty_row_index), colors.HexColor("#9aa5b5")),
+            ]
+        )
+    table.setStyle(TableStyle(commands))
+    return table
+
+
+def draw_pdf_footer(canvas: Any, document: SimpleDocTemplate) -> None:
+    canvas.saveState()
+    page_width, _ = portrait(A4)
+    footer_y = 8 * mm
+    canvas.setStrokeColor(colors.HexColor("#dfe6f0"))
+    canvas.setLineWidth(0.5)
+    canvas.line(document.leftMargin, footer_y + 6, page_width - document.rightMargin, footer_y + 6)
+    canvas.setFillColor(colors.HexColor("#7e8a9d"))
+    canvas.setFont("Helvetica", 7.5)
+    canvas.drawRightString(
+        page_width - document.rightMargin,
+        footer_y,
+        f"Página {canvas.getPageNumber()} de 1",
+    )
+    canvas.restoreState()
 
 
 def build_distribution_pdf(distribution: dict[str, Any]) -> BytesIO:
     buffer = BytesIO()
-    page_width, page_height = landscape(A4)
+    page_width, page_height = portrait(A4)
+    side_margin = 12 * mm
+    top_margin = 10 * mm
+    bottom_margin = 18 * mm
     document = SimpleDocTemplate(
         buffer,
         pagesize=(page_width, page_height),
-        rightMargin=16 * mm,
-        leftMargin=16 * mm,
-        topMargin=14 * mm,
-        bottomMargin=14 * mm,
+        rightMargin=side_margin,
+        leftMargin=side_margin,
+        topMargin=top_margin,
+        bottomMargin=bottom_margin,
         title="Relatório analítico de energia solar",
         author="PPA Aluguel",
     )
+    content_width = page_width - side_margin * 2
     styles = getSampleStyleSheet()
+    eyebrow_style = ParagraphStyle(
+        "SolarReportEyebrow",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7.5,
+        leading=9,
+        textColor=colors.HexColor("#a0aabd"),
+        tracking=1.1,
+        spaceAfter=2,
+    )
     title_style = ParagraphStyle(
         "SolarReportTitle",
         parent=styles["Title"],
         alignment=TA_LEFT,
         fontName="Helvetica-Bold",
-        fontSize=18,
-        leading=22,
+        fontSize=16,
+        leading=18,
         textColor=colors.HexColor("#38465d"),
-        spaceAfter=5,
+        spaceAfter=2,
     )
     subtitle_style = ParagraphStyle(
         "SolarReportSubtitle",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=10,
-        leading=14,
+        fontSize=8.5,
+        leading=10.5,
         textColor=colors.HexColor("#6e7b8e"),
-        spaceAfter=12,
+        spaceAfter=6,
     )
-    heading_style = ParagraphStyle(
-        "SolarReportHeading",
+    summary_label_style = ParagraphStyle(
+        "SolarReportSummaryLabel",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7,
+        leading=8.5,
+        textColor=colors.HexColor("#9aa5b5"),
+    )
+    summary_value_style = ParagraphStyle(
+        "SolarReportSummaryValue",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=9.5,
+        leading=11,
+        textColor=colors.HexColor("#38465d"),
+    )
+    panel_heading_style = ParagraphStyle(
+        "SolarReportPanelHeading",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
-        fontSize=12,
-        leading=15,
+        fontSize=9.5,
+        leading=11,
         textColor=colors.HexColor("#38465d"),
-        spaceBefore=8,
-        spaceAfter=7,
+        spaceAfter=3,
     )
-    body_style = ParagraphStyle(
-        "SolarReportBody",
+    table_header_style = ParagraphStyle(
+        "SolarReportTableHeader",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=6.4,
+        leading=7.2,
+        textColor=colors.HexColor("#536076"),
+    )
+    table_body_style = ParagraphStyle(
+        "SolarReportTableBody",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=9,
-        leading=12,
+        fontSize=7.4,
+        leading=8.5,
         textColor=colors.HexColor("#536076"),
+    )
+    table_total_style = ParagraphStyle(
+        "SolarReportTableTotal",
+        parent=table_body_style,
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#38465d"),
+    )
+    chart_empty_style = ParagraphStyle(
+        "SolarReportChartEmpty",
+        parent=table_body_style,
+        alignment=TA_LEFT,
+        textColor=colors.HexColor("#9aa5b5"),
+        spaceBefore=14,
+        spaceAfter=14,
+    )
+    legend_style = ParagraphStyle(
+        "SolarReportLegend",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=6.8,
+        leading=8,
+        textColor=colors.HexColor("#6e7b8e"),
     )
 
     unit = distribution.get("unidade") or {}
@@ -1459,132 +1974,209 @@ def build_distribution_pdf(distribution: dict[str, Any]) -> BytesIO:
     totals = distribution.get("totais") or {}
     distribution_totals = totals.get("distribuicao") or {}
     billing_totals = totals.get("cobranca") or {}
-    sorted_distributions = sorted(
-        enumerate(distributions),
-        key=lambda item: (-float(item[1].get("percentual_distribuicao") or 0), item[0]),
-    )
-    sorted_distributions = [item[1] for item in sorted_distributions]
-
-    story = [
-        pdf_paragraph("Relatório analítico de energia solar", title_style),
-        pdf_paragraph(f"Unidade geradora: {identification}", subtitle_style),
+    sorted_distributions = [
+        item[1]
+        for item in sorted(
+            enumerate(distributions),
+            key=lambda item: (
+                -pdf_distribution_value(item[1].get("percentual_distribuicao")),
+                item[0],
+            ),
+        )
+    ]
+    sorted_billings = [
+        item[1]
+        for item in sorted(enumerate(billings), key=pdf_billing_sort_key)
     ]
 
-    positive_distributions = [
-        item
-        for item in sorted_distributions
-        if float(item.get("percentual_distribuicao") or 0) > 0
-    ]
-    if positive_distributions:
-        chart = Drawing(420, 190)
-        pie = Pie()
-        pie.x = 105
-        pie.y = 10
-        pie.width = 170
-        pie.height = 170
-        pie.data = [float(item["percentual_distribuicao"]) for item in positive_distributions]
-        pie.labels = [
-            f"{pdf_first_client_name(item.get('cliente_nome'))} "
-            f"{pdf_percentage(item.get('percentual_distribuicao'))}"
-            for item in positive_distributions
-        ]
-        chart_colors = (
-            "#4f63d9",
-            "#36a77d",
-            "#d9a83d",
-            "#d95b67",
-            "#8d6ac8",
-            "#4aa9c8",
-            "#d17a4f",
-            "#6f7f9d",
-        )
-        for index, color in enumerate(chart_colors[: len(pie.data)]):
-            pie.slices[index].fillColor = colors.HexColor(color)
-            pie.slices[index].strokeColor = colors.white
-        chart.add(pie)
-        story.extend([chart, Spacer(1, 4)])
-    else:
-        story.append(pdf_paragraph("Não há percentuais maiores que zero para desenhar o gráfico.", body_style))
-
-    story.append(
-        pdf_paragraph(
-            f"Tabela de distribuição ({pdf_count_label(distribution_totals.get('quantidade_imoveis'))})",
-            heading_style,
-        )
-    )
-    distribution_rows = [[
-        "Cliente energia solar",
-        "Percentual de distribuição (%)",
-        "kWh/mês estimado",
-    ]]
-    distribution_rows.extend(
+    header = Table(
         [
-            pdf_first_client_name(item.get("cliente_nome")),
-            pdf_percentage(item.get("percentual_distribuicao")),
-            pdf_integer(item.get("kwh_mes_estimado")),
-        ]
-        for item in sorted_distributions
+            [pdf_paragraph("Análise", eyebrow_style)],
+            [pdf_paragraph("Distribuição da unidade", title_style)],
+            [
+                pdf_paragraph(
+                    "Confira os clientes e percentuais dos imóveis vinculados.",
+                    subtitle_style,
+                )
+            ],
+            [
+                Table(
+                    [[
+                        pdf_paragraph("Unidade geradora", summary_label_style),
+                        pdf_paragraph(str(identification), summary_value_style),
+                    ]],
+                    colWidths=[content_width * 0.32, content_width * 0.68],
+                    hAlign="LEFT",
+                    style=TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fbfcfe")),
+                            ("BOX", (0, 0), (-1, -1), 0.55, colors.HexColor("#e5eaf2")),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                            ("TOPPADDING", (0, 0), (-1, -1), 6),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                        ]
+                    ),
+                )
+            ],
+        ],
+        colWidths=[content_width],
+        hAlign="LEFT",
     )
-    distribution_rows.append([
-        "Total",
-        pdf_percentage(distribution_totals.get("percentual_distribuicao")),
-        pdf_integer(distribution_totals.get("kwh_mes_estimado")),
-    ])
-    story.append(
-        build_pdf_table(
-            distribution_rows,
-            [86 * mm, 65 * mm, 48 * mm],
-        )
-    )
-
-    story.append(
-        pdf_paragraph(
-            f"Tabela de cobrança ({pdf_count_label(billing_totals.get('quantidade_imoveis'))})",
-            heading_style,
-        )
-    )
-    billing_rows = [["Cliente energia solar", "kWh/mês estimado", "R$/mês"]]
-    billing_rows.extend(
-        [
-            pdf_first_client_name(item.get("cliente_nome")),
-            pdf_integer(item.get("kwh_mes_estimado")),
-            pdf_currency(item.get("valor_mensal")),
-        ]
-        for item in billings
-    )
-    billing_rows.append([
-        "Total",
-        pdf_integer(billing_totals.get("kwh_mes_estimado")),
-        pdf_currency(billing_totals.get("valor_mensal")),
-    ])
-    story.append(build_pdf_table(billing_rows, [86 * mm, 65 * mm, 48 * mm]))
-    document.build(story)
-    buffer.seek(0)
-    return buffer
-
-
-def build_pdf_table(rows: list[list[str]], widths: list[float]) -> Table:
-    table = Table(rows, colWidths=widths, repeatRows=1, hAlign="LEFT")
-    table.setStyle(
+    header.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2f8")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#536076")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor("#536076")),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#dfe6f0")),
-                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, -1), 7),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f1f5fa")),
-                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-                ("LINEABOVE", (0, -1), (-1, -1), 1, colors.HexColor("#bfcbdc")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 0),
+                ("BOTTOMPADDING", (0, 1), (-1, 1), 0),
+                ("BOTTOMPADDING", (0, 2), (-1, 2), 6),
+                ("BOTTOMPADDING", (0, 3), (-1, 3), 0),
             ]
         )
     )
-    return table
+
+    chart_width = content_width - 28
+    chart = build_distribution_chart(sorted_distributions, chart_width)
+    chart_content: list[Any] = [
+        pdf_paragraph("Distribuição por cliente", panel_heading_style),
+    ]
+    if chart is not None:
+        chart_content.append(chart)
+    else:
+        chart_content.append(
+            pdf_paragraph(
+                "Não há percentuais maiores que zero para desenhar o gráfico.",
+                chart_empty_style,
+            )
+        )
+    chart_content.append(build_pdf_legend(sorted_distributions, chart_width, legend_style))
+    chart_panel = build_pdf_panel(chart_content, content_width - 8)
+
+    panel_width = (content_width - 18) / 2
+    inner_table_width = panel_width - 20
+    table_widths = [
+        inner_table_width * 0.39,
+        inner_table_width * 0.31,
+        inner_table_width * 0.30,
+    ]
+    distribution_rows = [
+        [
+            "Cliente energia solar",
+            "Percentual de\ndistribuição (%)",
+            "kWh/mês\nestimado",
+        ],
+        *[
+            [
+                pdf_first_client_name(item.get("cliente_nome")),
+                pdf_percentage(item.get("percentual_distribuicao")),
+                pdf_integer(item.get("kwh_mes_estimado")),
+            ]
+            for item in sorted_distributions
+        ],
+        [
+            "Total",
+            pdf_percentage(distribution_totals.get("percentual_distribuicao")),
+            pdf_kwh_total(distribution_totals.get("kwh_mes_estimado")),
+        ],
+    ]
+    billing_rows = [
+        ["Cliente energia solar", "kWh/mês\nestimado", "R$/mês"],
+        *[
+            [
+                pdf_first_client_name(item.get("cliente_nome")),
+                pdf_integer(item.get("kwh_mes_estimado")),
+                pdf_currency(item.get("valor_mensal")),
+            ]
+            for item in sorted_billings
+        ],
+        [
+            "Total",
+            pdf_integer(billing_totals.get("kwh_mes_estimado")),
+            pdf_currency(billing_totals.get("valor_mensal")),
+        ],
+    ]
+    distribution_table = build_pdf_table(
+        distribution_rows,
+        table_widths,
+        header_style=table_header_style,
+        body_style=table_body_style,
+        total_style=table_total_style,
+        empty_message=(
+            "Nenhum imóvel vinculado com cliente e percentual de energia cadastrados."
+            if not sorted_distributions
+            else None
+        ),
+    )
+    billing_table = build_pdf_table(
+        billing_rows,
+        table_widths,
+        header_style=table_header_style,
+        body_style=table_body_style,
+        total_style=table_total_style,
+        empty_message=(
+            "Nenhum imóvel com Cobrança solar igual a SIM."
+            if not billings
+            else None
+        ),
+    )
+    distribution_panel = build_pdf_panel(
+        [
+            pdf_paragraph(
+                f"Tabela de distribuição {pdf_count_label(distribution_totals.get('quantidade_imoveis'))}",
+                panel_heading_style,
+            ),
+            distribution_table,
+        ],
+        panel_width,
+    )
+    billing_panel = build_pdf_panel(
+        [
+            pdf_paragraph(
+                f"Tabela de cobrança {pdf_count_label(billing_totals.get('quantidade_imoveis'))}",
+                panel_heading_style,
+            ),
+            billing_table,
+        ],
+        panel_width,
+    )
+
+    body = Table(
+        [
+            [chart_panel, "", ""],
+            [distribution_panel, "", billing_panel],
+        ],
+        colWidths=[panel_width, 10, panel_width],
+        hAlign="LEFT",
+    )
+    body.setStyle(
+        TableStyle(
+            [
+                ("SPAN", (0, 0), (-1, 0)),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+
+    story = [
+        KeepInFrame(
+            content_width,
+            page_height - top_margin - bottom_margin,
+            [header, Spacer(1, 7), body],
+            mode="shrink",
+            hAlign="LEFT",
+            vAlign="TOP",
+        )
+    ]
+    document.build(story, onFirstPage=draw_pdf_footer)
+    buffer.seek(0)
+    return buffer
 
 
 def get_contract(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
@@ -1649,21 +2241,39 @@ def register_routes(app: Flask) -> None:
                     THEN 1 ELSE 0
                 END), 0) AS imoveis_energia_solar,
                 COALESCE(SUM(CASE
-                    WHEN i.adm_propriedade = 1
+                    WHEN UPPER(COALESCE(i.tipo_operacao, '')) LIKE '%ENERGIA SOLAR%'
+                         AND i.adm_propriedade = 1
                     THEN 1 ELSE 0
-                END), 0) AS imoveis_cobranca_solar
+                END), 0) AS imoveis_cobranca_solar,
+                COALESCE(SUM(CASE
+                    WHEN UPPER(COALESCE(i.tipo_operacao, '')) LIKE '%ALUGUEL%'
+                         AND EXISTS (
+                             SELECT 1
+                             FROM contratos AS ca
+                             WHERE ca.imovel_id = i.id
+                               AND ca.status = 'ATIVO'
+                         )
+                    THEN 1 ELSE 0
+                END), 0) AS imoveis_alugados
             FROM imoveis AS i
             {property_where}
             """,
             property_params,
         ).fetchone()
+        rental_total = property_counts["imoveis_locacao"]
+        solar_total = property_counts["imoveis_energia_solar"]
+        rented_total = property_counts["imoveis_alugados"]
+        billed_total = property_counts["imoveis_cobranca_solar"]
         counts = {
             "proprietarios": db.execute("SELECT COUNT(*) FROM proprietario").fetchone()[0],
             "inquilinos_clientes": db.execute("SELECT COUNT(*) FROM inquilinos_clientes").fetchone()[0],
             "imoveis": property_counts["total"],
-            "imoveis_locacao": property_counts["imoveis_locacao"],
-            "imoveis_energia_solar": property_counts["imoveis_energia_solar"],
-            "imoveis_cobranca_solar": property_counts["imoveis_cobranca_solar"],
+            "imoveis_locacao": rental_total,
+            "imoveis_alugados": rented_total,
+            "taxa_ocupacao": round((rented_total * 100) / rental_total) if rental_total else 0,
+            "imoveis_energia_solar": solar_total,
+            "imoveis_cobranca_solar": billed_total,
+            "taxa_cobranca_solar": round((billed_total * 100) / solar_total) if solar_total else 0,
             "contratos": db.execute(
                 f"""
                 SELECT COUNT(*)
@@ -1855,6 +2465,8 @@ def register_routes(app: Flask) -> None:
                            AS unidade_geradora_identificacao,
                        i.unidade_geradora_legada, i.percentual_energia,
                        i.cliente_energia_solar_id,
+                        i.repasse_iptu, i.valor_iptu,
+                        i.repasse_taxa_condominio, i.valor_condominio,
                        p.nome_completo AS responsavel_nome
                 FROM imoveis AS i
                 JOIN proprietario AS p ON p.id = i.responsavel
@@ -1882,8 +2494,9 @@ def register_routes(app: Flask) -> None:
                     (tipo_imovel, apelido, responsavel, cep, endereco, estado, cidade, bairro, numero,
                      complemento, inscricao_mun, aluguel, numero_energia, numero_agua,
                      adm_propriedade, imobiliaria, tipo_operacao, percentual_energia,
-                     cliente_energia_solar_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     cliente_energia_solar_id, repasse_iptu, valor_iptu,
+                     repasse_taxa_condominio, valor_condominio)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -1919,7 +2532,8 @@ def register_routes(app: Flask) -> None:
                         cidade = ?, bairro = ?, numero = ?, complemento = ?, inscricao_mun = ?,
                         aluguel = ?, numero_energia = ?, numero_agua = ?,
                         adm_propriedade = ?, imobiliaria = ?, tipo_operacao = ?, percentual_energia = ?,
-                        cliente_energia_solar_id = ?
+                        cliente_energia_solar_id = ?, repasse_iptu = ?, valor_iptu = ?,
+                        repasse_taxa_condominio = ?, valor_condominio = ?
                     WHERE id = ?
                     """,
                     (*values, record_id),
