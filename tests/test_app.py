@@ -1737,6 +1737,16 @@ class AppCrudTestCase(unittest.TestCase):
 
     def test_dashboard_contract_count_and_page_markup(self):
         page = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("Workspace", page)
+        self.assertNotIn("Visão geral", page)
+        self.assertNotIn("Olá, administrador", page)
+        self.assertNotIn("Acompanhe seus cadastros", page)
+        self.assertIn('id="module-description" hidden></p>', page)
+        self.assertNotIn('id="page-heading"', page)
+        self.assertIn('id="page-actions"', page)
+        self.assertIn('id="new-record-button"', page)
+        self.assertLess(page.index('id="global-summary"'), page.index('id="page-actions"'))
+        self.assertLess(page.index('id="page-actions"'), page.index('class="module-section"'))
         self.assertIn('data-module="contratos"', page)
         self.assertIn('data-module="relatorios"', page)
         self.assertIn('data-module="energia_solar"', page)
@@ -1796,11 +1806,35 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('value="ENERGIA SOLAR"', page)
         self.assertIn('value="ALUGUEL + ENERGIA SOLAR"', page)
         self.assertNotIn('data-field="energia_solar"', page)
+        topbar_summary_markup = page.split('id="topbar-summary"', 1)[1].split(
+            'class="topbar-user"', 1
+        )[0]
+        self.assertEqual(topbar_summary_markup.count('class="topbar-summary-card '), 2)
+        self.assertIn('id="count-proprietarios"', topbar_summary_markup)
+        self.assertIn('id="count-inquilinos"', topbar_summary_markup)
+        self.assertNotIn("pessoas cadastradas", topbar_summary_markup)
+        self.assertLess(page.index('id="topbar-summary"'), page.index('id="global-summary"'))
+        summary_markup = page.split('id="global-summary"', 1)[1].split(
+            'id="page-actions"', 1
+        )[0]
+        self.assertEqual(summary_markup.count('class="summary-card '), 2)
+        self.assertNotIn('id="count-proprietarios"', summary_markup)
+        self.assertNotIn('id="count-inquilinos"', summary_markup)
+        self.assertIn('id="count-imoveis-total"', summary_markup)
+        self.assertIn('id="count-contratos"', summary_markup)
+        self.assertIn('class="property-operations-panel"', summary_markup)
+        for count_id in (
+            "count-proprietarios",
+            "count-inquilinos",
+            "count-imoveis-total",
+            "count-contratos",
+        ):
+            self.assertEqual(page.count(f'id="{count_id}"'), 1)
         self.assertIn('id="count-imoveis-locacao"', page)
         self.assertIn('id="count-imoveis-cobranca-solar"', page)
         self.assertIn('id="count-imoveis-energia-solar"', page)
         self.assertIn('class="property-card-columns"', page)
-        self.assertIn('class="property-operation"', page)
+        self.assertEqual(summary_markup.count('class="property-operation"'), 2)
         self.assertIn(">Locação</h3>", page)
         self.assertIn(">Energia Solar</h3>", page)
         self.assertIn(">Total imóveis geridos</span>", page)
@@ -1809,9 +1843,8 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('id="rate-imoveis-ocupacao"', page)
         self.assertIn('id="rate-imoveis-cobranca-solar"', page)
         self.assertNotIn('id="count-imoveis"', page)
-        self.assertIn('class="property-card-title">Imóveis</span>', page)
-        self.assertNotIn('class="summary-card-amber"', page)
-        self.assertNotIn('id="count-contratos"', page)
+        self.assertNotIn('class="property-card-title"', page)
+        self.assertIn('class="summary-card summary-card-amber"', page)
         self.assertIn("GALPÃO COMERCIAL", page)
         self.assertIn("CHÁCARA/SÍTIO", page)
         self.assertEqual(page.count('data-field="rg"'), 2)
@@ -1832,6 +1865,12 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('id="active-contracts-head"', page)
         self.assertIn('id="closed-contracts-head"', page)
         self.assertIn('id="reports-panel"', page)
+        self.assertIn('id="report-period-toggle"', page)
+        self.assertIn('role="group" aria-label="Período do relatório"', page)
+        self.assertIn('data-report-period="month"', page)
+        self.assertIn('data-report-period="year"', page)
+        self.assertIn('data-report-period="month" aria-pressed="true"', page)
+        self.assertIn('data-report-period="year" aria-pressed="false"', page)
         self.assertIn('id="report-total-gross"', page)
         self.assertIn('id="report-total-iptu"', page)
         self.assertIn('id="report-total-condominium"', page)
@@ -1844,9 +1883,11 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('id="clear-cep-button"', page)
         self.assertIn(">Limpar CEP</button>", page)
         self.assertIn('id="owner-filter"', page)
+        self.assertIn('id="property-type-filter"', page)
         self.assertIn('id="solar-filter"', page)
         self.assertIn('id="module-title-count"', page)
-        self.assertLess(page.index('id="owner-filter"'), page.index('id="solar-filter"'))
+        self.assertLess(page.index('id="owner-filter"'), page.index('id="property-type-filter"'))
+        self.assertLess(page.index('id="property-type-filter"'), page.index('id="solar-filter"'))
         self.assertIn('<option value="1">SIM</option>', page)
         self.assertIn('<option value="0">NÃO</option>', page)
         self.assertIn("Cobrança solar", page)
@@ -1854,6 +1895,10 @@ class AppCrudTestCase(unittest.TestCase):
 
         app_js = Path(__file__).resolve().parents[1] / "static" / "js" / "app.js"
         source = app_js.read_text(encoding="utf-8")
+        style_css = app_js.parents[1].joinpath("css", "style.css").read_text(encoding="utf-8")
+        self.assertIn(".report-table th:not(:first-child)", style_css)
+        self.assertIn(".report-table td:first-child", style_css)
+        self.assertIn(".report-table th:not(:first-child) .sort-button", style_css)
         self.assertIn("function prefillPeriodSecurityFields(period)", source)
         self.assertIn("prefillPeriodSecurityFields(previousPeriod);", source)
         self.assertIn('[data-period-field="valor_caucao"]', source)
@@ -1863,8 +1908,19 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn("counts.imoveis_alugados", source)
         self.assertIn("counts.taxa_ocupacao", source)
         self.assertIn("counts.taxa_cobranca_solar", source)
-        self.assertNotIn('count-contratos', source)
+        self.assertIn('count-imoveis-total', source)
+        self.assertIn('counts.imoveis', source)
+        self.assertIn('count-contratos', source)
+        self.assertIn('counts.contratos', source)
+        self.assertIn('elements.topbarSummary = document.getElementById("topbar-summary")', source)
+        self.assertIn('elements.topbarSummary.hidden = isReports || isQuickSearch', source)
         self.assertIn("solarFilterValue", source)
+        self.assertIn('elements.pageActions = document.getElementById("page-actions")', source)
+        self.assertIn("elements.pageActions.hidden = isReports || isQuickSearch", source)
+        self.assertNotIn('getElementById("page-heading")', source)
+        self.assertIn("propertyTypeFilterValue", source)
+        self.assertIn("propertyTypeOptions", source)
+        self.assertIn("/api/tipos-imovel", source)
         self.assertIn("function uniqueRecordsById(records)", source)
         self.assertIn("state.records = uniqueRecordsById", source)
         self.assertIn("const seenIds = new Set()", source)
@@ -1873,8 +1929,27 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn("updateModuleTitle(config.title, state.records.length)", source)
         self.assertIn("adm_propriedade=${encodeURIComponent(state.solarFilterValue)}", source)
         self.assertIn("withPropertyFilters", source)
+        self.assertIn("tipo_imovel=${encodeURIComponent(state.propertyTypeFilterValue)}", source)
         self.assertIn('endpoint: "/api/relatorios"', source)
         self.assertIn("function renderReportsTable(config, sort)", source)
+        self.assertIn('reportPeriod: "month"', source)
+        self.assertIn("function handleReportPeriodChange(event)", source)
+        self.assertIn("function reportPeriodMultiplier()", source)
+        self.assertIn("return state.reportPeriod === \"year\" ? 12 : 1;", source)
+        self.assertIn("function reportDisplayValue(record, key)", source)
+        self.assertIn("function reportColumns(config)", source)
+        self.assertIn("function reportAverageValue(records, key)", source)
+        self.assertIn("function reportAverageValues(records)", source)
+        self.assertIn("function renderReportAverageRow(columns, averages, label, sort)", source)
+        self.assertIn('"Valor médio"', source)
+        self.assertIn('"Valor médio — desocupados / despesas"', source)
+        self.assertIn("reportAverageValues(activeRecords)", source)
+        self.assertIn("reportAverageValues(vacantRecords)", source)
+        self.assertIn("report-average-row", source)
+        self.assertIn("report-average-badge", source)
+        self.assertIn("formatCurrency(value)", source)
+        self.assertIn("scaleReportMoney(summary.total_aluguel_bruto)", source)
+        self.assertIn("reportDisplayValue(record, \"aluguel_liquido\")", source)
         self.assertIn('"DESOCUPADO_DESPESA"', source)
         self.assertIn('record.tipo_linha === "DESOCUPADO_DESPESA"', source)
         self.assertIn("IMÓVEIS DESOCUPADOS / DESPESAS", source)
@@ -2000,6 +2075,358 @@ class AppCrudTestCase(unittest.TestCase):
         )
         self.assertEqual(owner_one_counts["proprietarios"], all_counts["proprietarios"])
         self.assertEqual(owner_one_counts["inquilinos_clientes"], all_counts["inquilinos_clientes"])
+
+    def test_property_type_options_and_shared_filter_scope(self):
+        owner_one = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Tipo Um")
+        ).get_json()
+        owner_two = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Tipo Dois")
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Tipo")
+        ).get_json()
+
+        def create_property(owner_id, name, property_type, with_contract=True):
+            payload = self.property_payload(owner_id)
+            payload.update({"apelido": name, "tipo_imovel": property_type})
+            property_data = self.post_json("/api/imoveis", payload).get_json()
+            contract = None
+            if with_contract:
+                contract = self.post_json(
+                    "/api/contratos",
+                    self.contract_payload(property_data["id"], tenant["id"]),
+                ).get_json()
+            return property_data, contract
+
+        casa, casa_contract = create_property(
+            owner_one["id"], "Casa Tipo", "CASA"
+        )
+        apartamento, apartamento_contract = create_property(
+            owner_one["id"], "Apartamento Tipo", "APARTAMENTO"
+        )
+        owner_two_property, _ = create_property(
+            owner_two["id"], "Casa Outro Proprietario", "CASA"
+        )
+
+        all_types = self.client.get("/api/tipos-imovel")
+        self.assertEqual(all_types.status_code, 200)
+        self.assertEqual(set(all_types.get_json()), {"CASA", "APARTAMENTO"})
+        owner_types = self.client.get(
+            "/api/tipos-imovel", query_string={"proprietario_id": owner_one["id"]}
+        )
+        self.assertEqual(owner_types.get_json(), ["CASA", "APARTAMENTO"])
+        owner_two_types = self.client.get(
+            "/api/tipos-imovel", query_string={"proprietario_id": owner_two["id"]}
+        )
+        self.assertEqual(owner_two_types.get_json(), ["CASA"])
+
+        query = {"proprietario_id": owner_one["id"], "tipo_imovel": "CASA"}
+        filtered_properties = self.client.get("/api/imoveis", query_string=query)
+        filtered_property_ids = {record["id"] for record in filtered_properties.get_json()}
+        self.assertEqual(filtered_property_ids, {casa["id"]})
+        filtered_contracts = self.client.get("/api/contratos", query_string=query)
+        self.assertEqual(
+            {record["id"] for record in filtered_contracts.get_json()},
+            {casa_contract["id"]},
+        )
+        filtered_counts = self.client.get(
+            "/api/dashboard", query_string=query
+        ).get_json()["counts"]
+        self.assertEqual(
+            (
+                filtered_counts["imoveis"],
+                filtered_counts["imoveis_locacao"],
+                filtered_counts["imoveis_alugados"],
+                filtered_counts["contratos"],
+            ),
+            (1, 1, 1, 1),
+        )
+        self.assertNotIn(apartamento["id"], filtered_property_ids)
+        self.assertNotIn(owner_two_property["id"], filtered_property_ids)
+        self.assertIsNotNone(apartamento_contract)
+
+    def test_property_type_filter_scopes_financial_report_rows_and_summary(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Relatorio Tipo")
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Relatorio Tipo")
+        ).get_json()
+
+        def create_property(name, property_type, contract=False):
+            payload = self.property_payload(owner["id"])
+            payload.update(
+                {
+                    "apelido": name,
+                    "tipo_imovel": property_type,
+                    "repasse_iptu": "0",
+                    "valor_iptu": "R$ 120,00",
+                    "repasse_taxa_condominio": "0",
+                    "valor_condominio": "R$ 30,00",
+                    "imobiliaria": "0",
+                }
+            )
+            property_data = self.post_json("/api/imoveis", payload).get_json()
+            if contract:
+                contract_payload = self.contract_payload(property_data["id"], tenant["id"])
+                contract_payload["valor_aluguel"] = "R$ 1.000,00"
+                self.assertEqual(
+                    self.post_json("/api/contratos", contract_payload).status_code,
+                    201,
+                )
+            return property_data
+
+        selected_active = create_property("Casa Ativa", "CASA", contract=True)
+        selected_vacant = create_property("Casa Vaga", "CASA")
+        excluded_active = create_property("Apartamento Ativo", "APARTAMENTO", contract=True)
+        excluded_vacant = create_property("Apartamento Vago", "APARTAMENTO")
+
+        filtered = self.client.get(
+            "/api/relatorios",
+            query_string={"proprietario_id": owner["id"], "tipo_imovel": "CASA"},
+        )
+        self.assertEqual(filtered.status_code, 200)
+        data = filtered.get_json()
+        report_ids = {row["imovel_id"] for row in data["linhas"]}
+        self.assertEqual(report_ids, {selected_active["id"], selected_vacant["id"]})
+        self.assertEqual(data["resumo"]["total_aluguel_bruto"], 1000.0)
+        self.assertEqual(data["resumo"]["total_iptu_descontado"], 20.0)
+        self.assertEqual(data["resumo"]["total_condominio_descontado"], 60.0)
+        self.assertEqual(data["resumo"]["total_aluguel_liquido"], 920.0)
+        self.assertNotIn(excluded_active["id"], report_ids)
+        self.assertNotIn(excluded_vacant["id"], report_ids)
+
+    def test_property_type_filter_scopes_generation_units_by_linked_properties(self):
+        owner_one = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Geracao Tipo Um")
+        ).get_json()
+        owner_two = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Geracao Tipo Dois")
+        ).get_json()
+        client = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Geracao Tipo")
+        ).get_json()
+        unit_one = self.post_json(
+            "/api/unidades-geracao", self.generation_unit_payload(owner_one["id"])
+        ).get_json()
+        unit_two_payload = self.generation_unit_payload(owner_one["id"])
+        unit_two_payload["inscricao_mun"] = "UG-002"
+        unit_two = self.post_json("/api/unidades-geracao", unit_two_payload).get_json()
+        other_unit = self.post_json(
+            "/api/unidades-geracao", self.generation_unit_payload(owner_two["id"])
+        ).get_json()
+
+        def link_property(name, property_type, unit_id, owner_id):
+            payload = self.property_payload(owner_id)
+            payload.update(
+                {
+                    "apelido": name,
+                    "tipo_imovel": property_type,
+                    "unidade_geradora_id": unit_id,
+                    "cliente_energia_solar_id": client["id"],
+                    "percentual_energia": "10",
+                }
+            )
+            return self.post_json("/api/imoveis", payload).get_json()
+
+        link_property("Casa Geracao", "CASA", unit_one["id"], owner_one["id"])
+        link_property(
+            "Apartamento Geracao", "APARTAMENTO", unit_two["id"], owner_one["id"]
+        )
+        link_property("Casa Outro", "CASA", other_unit["id"], owner_two["id"])
+
+        casa_units = self.client.get(
+            "/api/unidades-geracao",
+            query_string={"proprietario_id": owner_one["id"], "tipo_imovel": "CASA"},
+        ).get_json()
+        apartamento_units = self.client.get(
+            "/api/unidades-geracao",
+            query_string={
+                "proprietario_id": owner_one["id"],
+                "tipo_imovel": "APARTAMENTO",
+            },
+        ).get_json()
+        self.assertEqual([unit["id"] for unit in casa_units], [unit_one["id"]])
+        self.assertEqual(
+            [unit["id"] for unit in apartamento_units], [unit_two["id"]]
+        )
+        combined_units = self.client.get(
+            "/api/unidades-geracao?proprietario_id=%s&proprietario_id=%s"
+            "&tipo_imovel=CASA&tipo_imovel=APARTAMENTO"
+            % (owner_one["id"], owner_two["id"])
+        ).get_json()
+        self.assertEqual(
+            {unit["id"] for unit in combined_units},
+            {unit_one["id"], unit_two["id"], other_unit["id"]},
+        )
+        self.assertEqual(
+            len(combined_units), len({unit["id"] for unit in combined_units})
+        )
+
+    def test_property_type_filter_rejects_invalid_values(self):
+        endpoints = (
+            "/api/imoveis",
+            "/api/contratos",
+            "/api/dashboard",
+            "/api/relatorios",
+            "/api/unidades-geracao",
+        )
+        for endpoint in endpoints:
+            self.assertEqual(
+                self.client.get(f"{endpoint}?tipo_imovel=LOFT").status_code,
+                400,
+            )
+        self.assertEqual(
+            self.client.get("/api/tipos-imovel?proprietario_id=999").status_code,
+            400,
+        )
+
+    def test_multiple_property_filters_scope_dashboard_contracts_and_reports(self):
+        owner_one = self.post_json(
+            "/api/proprietarios", self.person_payload("Owner Multi One")
+        ).get_json()
+        owner_two = self.post_json(
+            "/api/proprietarios", self.person_payload("Owner Multi Two")
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Tenant Multi")
+        ).get_json()
+
+        def create_property(owner_id, name, property_type, **overrides):
+            payload = self.property_payload(owner_id)
+            payload.update(
+                {
+                    "apelido": name,
+                    "tipo_imovel": property_type,
+                    **overrides,
+                }
+            )
+            return self.post_json("/api/imoveis", payload).get_json()
+
+        selected_house = create_property(owner_one["id"], "Selected House", "CASA")
+        selected_apartment = create_property(
+            owner_one["id"], "Selected Apartment", "APARTAMENTO"
+        )
+        selected_vacant = create_property(
+            owner_two["id"],
+            "Selected Vacant House",
+            "CASA",
+            repasse_iptu="0",
+            valor_iptu="R$ 120,00",
+            repasse_taxa_condominio="0",
+            valor_condominio="R$ 30,00",
+            imobiliaria="0",
+        )
+        excluded_property = create_property(owner_two["id"], "Excluded Land", "TERRENO")
+
+        for property_data in (selected_house, selected_apartment, excluded_property):
+            self.assertEqual(
+                self.post_json(
+                    "/api/contratos",
+                    self.contract_payload(property_data["id"], tenant["id"]),
+                ).status_code,
+                201,
+            )
+
+        query = (
+            f"?proprietario_id={owner_one['id']}"
+            f"&proprietario_id={owner_two['id']}"
+            f"&tipo_imovel=CASA&tipo_imovel=APARTAMENTO"
+        )
+        properties = self.client.get(f"/api/imoveis{query}")
+        self.assertEqual(properties.status_code, 200)
+        property_ids = [record["id"] for record in properties.get_json()]
+        self.assertEqual(
+            set(property_ids),
+            {selected_house["id"], selected_apartment["id"], selected_vacant["id"]},
+        )
+        self.assertEqual(len(property_ids), len(set(property_ids)))
+
+        contracts = self.client.get(f"/api/contratos{query}").get_json()
+        self.assertEqual(len(contracts), 2)
+        self.assertEqual(
+            {record["imovel_id"] for record in contracts},
+            {selected_house["id"], selected_apartment["id"]},
+        )
+
+        counts = self.client.get(f"/api/dashboard{query}").get_json()["counts"]
+        self.assertEqual(
+            (
+                counts["imoveis"],
+                counts["imoveis_locacao"],
+                counts["imoveis_alugados"],
+                counts["contratos"],
+            ),
+            (3, 3, 2, 2),
+        )
+
+        report = self.client.get(f"/api/relatorios{query}")
+        self.assertEqual(report.status_code, 200)
+        data = report.get_json()
+        report_ids = [row["imovel_id"] for row in data["linhas"]]
+        self.assertEqual(
+            set(report_ids),
+            {selected_house["id"], selected_apartment["id"], selected_vacant["id"]},
+        )
+        self.assertEqual(len(report_ids), len(set(report_ids)))
+        self.assertEqual(data["resumo"]["total_aluguel_bruto"], 5000.0)
+        self.assertEqual(data["resumo"]["total_iptu_descontado"], 10.0)
+        self.assertEqual(data["resumo"]["total_condominio_descontado"], 30.0)
+        self.assertEqual(data["resumo"]["total_aluguel_liquido"], 4960.0)
+
+        available_types = self.client.get(
+            "/api/tipos-imovel",
+            query_string=[
+                ("proprietario_id", owner_one["id"]),
+                ("proprietario_id", owner_two["id"]),
+            ],
+        )
+        self.assertEqual(available_types.get_json(), ["CASA", "APARTAMENTO", "TERRENO"])
+
+        duplicate_query = (
+            f"?proprietario_id={owner_one['id']}"
+            f"&proprietario_id={owner_one['id']}"
+            f"&tipo_imovel=CASA&tipo_imovel=CASA"
+        )
+        duplicate_records = self.client.get(f"/api/imoveis{duplicate_query}").get_json()
+        self.assertEqual([record["id"] for record in duplicate_records], [selected_house["id"]])
+
+    def test_multiple_property_filters_reject_invalid_values(self):
+        endpoints = (
+            "/api/imoveis",
+            "/api/contratos",
+            "/api/dashboard",
+            "/api/relatorios",
+            "/api/unidades-geracao",
+        )
+        for endpoint in endpoints:
+            self.assertEqual(
+                self.client.get(f"{endpoint}?proprietario_id=1&proprietario_id=abc").status_code,
+                400,
+            )
+            self.assertEqual(
+                self.client.get(f"{endpoint}?tipo_imovel=CASA&tipo_imovel=LOFT").status_code,
+                400,
+            )
+
+    def test_multiple_filter_markup_and_query_serialization(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn('id="owner-filter"', page)
+        self.assertIn('id="property-type-filter"', page)
+        self.assertIn('class="multi-filter-menu"', page)
+        self.assertIn('data-filter-kind="owner"', page)
+        self.assertIn('data-filter-kind="property-type"', page)
+
+        source = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ownerFilterIds", source)
+        self.assertIn("propertyTypeFilterValues", source)
+        self.assertIn('params.push(`proprietario_id=${encodeURIComponent(ownerId)}`)', source)
+        self.assertIn('params.push(`tipo_imovel=${encodeURIComponent(propertyType)}`)', source)
+        self.assertIn("function bindMultiFilter(filter, kind)", source)
+        self.assertIn("handleDocumentKeydown", source)
 
     def test_global_solar_filter_applies_to_properties_contracts_and_dashboard(self):
         owner_one = self.post_json(

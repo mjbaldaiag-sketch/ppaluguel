@@ -6,7 +6,7 @@
             endpoint: "/api/busca-rapida",
             title: "Busca rápida",
             singular: "imóvel",
-            description: "Consulte rapidamente os dados consolidados dos seus imóveis.",
+            description: "",
             empty: "Nenhum resultado encontrado.",
             emptyDescription: "Digite outro termo para consultar os imóveis cadastrados.",
             quickSearch: true,
@@ -37,7 +37,7 @@
             endpoint: "/api/proprietarios",
             title: "Proprietários",
             singular: "proprietário",
-            description: "Gerencie as pessoas responsáveis pelos seus imóveis.",
+            description: "",
             empty: "Ainda não há proprietários cadastrados.",
             emptyDescription: "Cadastre o primeiro proprietário para começar a relacionar seus imóveis.",
             columns: [
@@ -51,7 +51,7 @@
             endpoint: "/api/inquilinos-clientes",
             title: "Inquilinos / Clientes",
             singular: "inquilino/cliente",
-            description: "Centralize os dados de inquilinos e clientes.",
+            description: "",
             empty: "Ainda não há inquilinos ou clientes cadastrados.",
             emptyDescription: "Cadastre seu primeiro inquilino ou cliente para manter os contatos organizados.",
             columns: [
@@ -65,7 +65,7 @@
             endpoint: "/api/imoveis",
             title: "Imóveis",
             singular: "imóvel",
-            description: "Acompanhe seus imóveis, responsáveis e dados de consumo.",
+            description: "",
             empty: "Ainda não há imóveis cadastrados.",
             emptyDescription: "Cadastre um proprietário primeiro e depois adicione o seu primeiro imóvel.",
             columns: [
@@ -89,7 +89,7 @@
             newLabel: "Nova unidade de geração",
             viewLabel: "Detalhes da unidade de geração",
             feminine: true,
-            description: "Gerencie suas unidades de geração e a estimativa mensal de energia.",
+            description: "",
             empty: "Ainda não há unidades de geração cadastradas.",
             emptyDescription: "Cadastre a primeira unidade de geração para começar.",
             columns: [
@@ -114,7 +114,7 @@
             endpoint: "/api/contratos",
             title: "Contratos",
             singular: "contrato",
-            description: "Gerencie os contratos de aluguel e seus vínculos.",
+            description: "",
             empty: "Ainda não há contratos cadastrados.",
             emptyDescription: "Cadastre o primeiro contrato relacionando um imóvel e um inquilino/cliente.",
             columns: [
@@ -131,7 +131,7 @@
             endpoint: "/api/relatorios",
             title: "Relatórios",
             singular: "relatório",
-            description: "Acompanhe o resumo financeiro mensal dos imóveis ocupados e desocupados.",
+            description: "",
             empty: "Nenhum contrato ativo ou despesa de imóvel desocupado.",
             emptyDescription: "Contratos ativos e despesas aplicáveis de imóveis desocupados aparecerão neste relatório.",
             readOnly: true,
@@ -147,6 +147,20 @@
             ],
         },
     };
+
+    const REPORT_ANNUALIZABLE_KEYS = new Set([
+        "aluguel_bruto",
+        "iptu_mensal",
+        "condominio_descontado",
+        "aluguel_liquido",
+    ]);
+
+    const REPORT_AVERAGE_KEYS = [
+        "aluguel_bruto",
+        "iptu_mensal",
+        "condominio_descontado",
+        "aluguel_liquido",
+    ];
 
     const states = [
         ["AC", "Acre"], ["AL", "Alagoas"], ["AP", "Amapá"], ["AM", "Amazonas"],
@@ -214,14 +228,21 @@
         modalMode: "create",
         modalModule: "proprietarios",
         moduleRequestId: 0,
+        dashboardRequestId: 0,
+        propertyTypeOptionsRequestId: 0,
         ownerFilterId: "",
+        ownerFilterIds: [],
+        propertyTypeFilterValue: "",
+        propertyTypeFilterValues: [],
         solarFilterValue: "",
         owners: [],
+        propertyTypeOptions: [],
         generationUnits: [],
         properties: [],
         clients: [],
         contractPeriods: [],
         reportSummary: {},
+        reportPeriod: "month",
         quickSearchTerm: "",
         quickSearchTimer: null,
         quickSearchController: null,
@@ -259,13 +280,14 @@
         elements.menuToggle = document.getElementById("menu-toggle");
         elements.navItems = document.querySelectorAll("[data-module]");
         elements.mainContent = document.querySelector(".main-content");
-        elements.pageHeading = document.getElementById("page-heading");
+        elements.pageActions = document.getElementById("page-actions");
         elements.breadcrumbModule = document.getElementById("breadcrumb-module");
         elements.moduleTitle = document.getElementById("module-title");
         elements.moduleTitleLabel = document.getElementById("module-title-label");
         elements.moduleTitleCount = document.getElementById("module-title-count");
         elements.moduleDescription = document.getElementById("module-description");
         elements.ownerFilter = document.getElementById("owner-filter");
+        elements.propertyTypeFilter = document.getElementById("property-type-filter");
         elements.newRecordButton = document.getElementById("new-record-button");
         elements.newRecordLabel = document.getElementById("new-record-label");
         elements.refreshButton = document.getElementById("refresh-button");
@@ -286,11 +308,21 @@
         elements.quickSearchEmpty = document.getElementById("quick-search-empty");
         elements.quickSearchLoading = document.getElementById("quick-search-loading");
         elements.globalSummary = document.getElementById("global-summary");
+        elements.topbarSummary = document.getElementById("topbar-summary");
         elements.reportsPanel = document.getElementById("reports-panel");
         elements.reportsHead = document.getElementById("reports-head");
         elements.reportsBody = document.getElementById("reports-body");
         elements.reportsEmpty = document.getElementById("reports-empty");
         elements.reportsLoadingState = document.getElementById("reports-loading-state");
+        elements.reportPeriodToggle = document.getElementById("report-period-toggle");
+        elements.reportPeriodOptions = document.querySelectorAll("[data-report-period]");
+        elements.reportSummaryGrid = document.querySelector(".report-summary-grid");
+        elements.reportLabels = {
+            totalGross: document.querySelector('[data-report-label="total-gross"]'),
+            totalIptu: document.querySelector('[data-report-label="total-iptu"]'),
+            totalCondominium: document.querySelector('[data-report-label="total-condominium"]'),
+            totalNet: document.querySelector('[data-report-label="total-net"]'),
+        };
         elements.reportTotalGross = document.getElementById("report-total-gross");
         elements.reportTotalIptu = document.getElementById("report-total-iptu");
         elements.reportTotalCondominium = document.getElementById("report-total-condominium");
@@ -367,10 +399,11 @@
         elements.newRecordButton.addEventListener("click", () => openModal("create", null, elements.newRecordButton.dataset.module || state.module));
         elements.emptyAction.addEventListener("click", () => openModal("create", null, elements.emptyAction.dataset.module || state.module));
         elements.refreshButton.addEventListener("click", () => refreshCurrentModule());
-        elements.ownerFilter.addEventListener("change", () => {
-            state.ownerFilterId = elements.ownerFilter.value;
-            refreshCurrentModule();
-        });
+        bindMultiFilter(elements.ownerFilter, "owner");
+        bindMultiFilter(elements.propertyTypeFilter, "property-type");
+        document.addEventListener("click", handleDocumentClick);
+        document.addEventListener("keydown", handleDocumentKeydown);
+        elements.reportPeriodToggle.addEventListener("click", handleReportPeriodChange);
         elements.solarFilter.addEventListener("change", () => {
             state.solarFilterValue = elements.solarFilter.value;
             refreshCurrentModule();
@@ -450,6 +483,201 @@
         setTableMode();
     }
 
+    function bindMultiFilter(filter, kind) {
+        if (!filter) {
+            return;
+        }
+        const trigger = filter.querySelector(".multi-filter-trigger");
+        const menu = filter.querySelector(".multi-filter-menu");
+        if (!trigger || !menu) {
+            return;
+        }
+        menu.setAttribute("role", "group");
+        trigger.addEventListener("click", () => {
+            if (menu.hidden) {
+                openMultiFilter(filter);
+            } else {
+                closeMultiFilter(filter);
+            }
+        });
+        trigger.addEventListener("keydown", (event) => {
+            if (["Enter", " ", "ArrowDown"].includes(event.key)) {
+                event.preventDefault();
+                openMultiFilter(filter);
+                const firstCheckbox = menu.querySelector("input[type=checkbox]");
+                if (firstCheckbox) {
+                    firstCheckbox.focus();
+                }
+            }
+        });
+        menu.addEventListener("change", async (event) => {
+            const checkbox = event.target.closest("input[data-filter-checkbox]");
+            if (!checkbox) {
+                return;
+            }
+            const focusedValue = checkbox.dataset.filterValue;
+            const value = checkbox.dataset.filterValue || "";
+            if (!value) {
+                setMultiFilterSelection(kind, []);
+            } else {
+                const selected = getMultiFilterSelection(kind).filter((item) => item !== value);
+                if (checkbox.checked) {
+                    selected.push(value);
+                }
+                setMultiFilterSelection(kind, selected);
+            }
+            syncMultiFilterState();
+            renderMultiFilter(filter, getMultiFilterOptions(kind), getMultiFilterSelection(kind), kind);
+            const nextFocusedCheckbox = [...menu.querySelectorAll("input[data-filter-checkbox]")]
+                .find((item) => item.dataset.filterValue === focusedValue);
+            if (nextFocusedCheckbox) {
+                nextFocusedCheckbox.focus();
+            }
+            if (kind === "owner") {
+                await loadPropertyTypeOptions();
+            }
+            await refreshCurrentModule();
+        });
+    }
+
+    function handleDocumentClick(event) {
+        [elements.ownerFilter, elements.propertyTypeFilter].forEach((filter) => {
+            if (filter && !filter.contains(event.target)) {
+                closeMultiFilter(filter);
+            }
+        });
+    }
+
+    function handleDocumentKeydown(event) {
+        if (event.key !== "Escape") {
+            return;
+        }
+        [elements.ownerFilter, elements.propertyTypeFilter].forEach((filter) => {
+            if (!filter) {
+                return;
+            }
+            const menu = filter.querySelector(".multi-filter-menu");
+            const trigger = filter.querySelector(".multi-filter-trigger");
+            const wasOpen = menu && !menu.hidden;
+            closeMultiFilter(filter);
+            if (wasOpen && trigger) {
+                trigger.focus();
+            }
+        });
+    }
+
+    function openMultiFilter(filter) {
+        if (!filter) {
+            return;
+        }
+        [elements.ownerFilter, elements.propertyTypeFilter]
+            .filter((item) => item && item !== filter)
+            .forEach(closeMultiFilter);
+        const trigger = filter.querySelector(".multi-filter-trigger");
+        const menu = filter.querySelector(".multi-filter-menu");
+        if (!trigger || !menu) {
+            return;
+        }
+        menu.hidden = false;
+        trigger.setAttribute("aria-expanded", "true");
+        filter.classList.add("is-open");
+    }
+
+    function closeMultiFilter(filter) {
+        if (!filter) {
+            return;
+        }
+        const trigger = filter.querySelector(".multi-filter-trigger");
+        const menu = filter.querySelector(".multi-filter-menu");
+        if (!trigger || !menu) {
+            return;
+        }
+        menu.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+        filter.classList.remove("is-open");
+    }
+
+    function getMultiFilterSelection(kind) {
+        return kind === "owner"
+            ? state.ownerFilterIds.slice()
+            : state.propertyTypeFilterValues.slice();
+    }
+
+    function setMultiFilterSelection(kind, values) {
+        const uniqueValues = [...new Set(values.map((value) => String(value)))];
+        if (kind === "owner") {
+            state.ownerFilterIds = uniqueValues;
+        } else {
+            state.propertyTypeFilterValues = uniqueValues;
+        }
+    }
+
+    function syncMultiFilterState() {
+        state.ownerFilterId = state.ownerFilterIds[0] || "";
+        state.propertyTypeFilterValue = state.propertyTypeFilterValues[0] || "";
+        updateMultiFilterSummary(elements.ownerFilter, state.ownerFilterIds);
+        updateMultiFilterSummary(elements.propertyTypeFilter, state.propertyTypeFilterValues);
+    }
+
+    function getMultiFilterOptions(kind) {
+        if (kind === "owner") {
+            return state.owners.map((owner) => ({
+                value: String(owner.id),
+                label: owner.nome_completo,
+            }));
+        }
+        return state.propertyTypeOptions.map((propertyType) => ({
+            value: propertyType,
+            label: propertyType,
+        }));
+    }
+
+    function renderMultiFilter(filter, options, selectedValues, kind) {
+        if (!filter) {
+            return;
+        }
+        const menu = filter.querySelector(".multi-filter-menu");
+        if (!menu) {
+            return;
+        }
+        const wasOpen = !menu.hidden;
+        const selected = new Set(selectedValues);
+        const allChecked = selected.size === 0;
+        const optionMarkup = options.length
+            ? options.map((option) => `
+                <label class="multi-filter-option">
+                    <input type="checkbox" data-filter-checkbox data-filter-value="${escapeHtml(option.value)}" ${selected.has(option.value) ? "checked" : ""}>
+                    <span>${escapeHtml(option.label)}</span>
+                </label>`).join("")
+            : `<span class="multi-filter-empty">Nenhuma opção disponível</span>`;
+        menu.innerHTML = `
+            <label class="multi-filter-option multi-filter-all">
+                <input type="checkbox" data-filter-checkbox data-filter-value="" ${allChecked ? "checked" : ""}>
+                <span>TODOS</span>
+            </label>
+            ${optionMarkup}`;
+        menu.hidden = !wasOpen;
+        updateMultiFilterSummary(filter, selectedValues);
+        if (kind) {
+            filter.dataset.filterKind = kind;
+        }
+    }
+
+    function updateMultiFilterSummary(filter, selectedValues) {
+        if (!filter) {
+            return;
+        }
+        const label = filter.querySelector("[data-filter-label]");
+        const trigger = filter.querySelector(".multi-filter-trigger");
+        if (!label || !trigger) {
+            return;
+        }
+        const count = selectedValues.length;
+        label.textContent = count ? `${count} selecionado${count === 1 ? "" : "s"}` : "TODOS";
+        trigger.title = count ? `${count} filtro${count === 1 ? "" : "s"} selecionado${count === 1 ? "" : "s"}` : "Todos";
+        trigger.setAttribute("aria-label", count ? `${count} selecionado${count === 1 ? "" : "s"}` : "Todos");
+    }
+
     function populateStaticSelects() {
         document.querySelectorAll('[data-field="estado_civil"]').forEach((select) => {
             maritalStatuses.forEach(([value, label]) => select.add(new Option(label, value)));
@@ -463,11 +691,17 @@
     }
 
     async function loadDashboard() {
+        const requestId = ++state.dashboardRequestId;
         try {
             const data = await apiFetch(withPropertyFilters("/api/dashboard", "dashboard"));
+            if (requestId !== state.dashboardRequestId) {
+                return;
+            }
             const counts = data.counts || {};
             document.getElementById("count-proprietarios").textContent = counts.proprietarios || 0;
             document.getElementById("count-inquilinos").textContent = counts.inquilinos_clientes || 0;
+            document.getElementById("count-imoveis-total").textContent = counts.imoveis || 0;
+            document.getElementById("count-contratos").textContent = counts.contratos || 0;
             document.getElementById("count-imoveis-locacao").textContent = counts.imoveis_locacao || 0;
             document.getElementById("count-imoveis-locacao-total").textContent = counts.imoveis_locacao || 0;
             document.getElementById("count-imoveis-alugados").textContent = counts.imoveis_alugados || 0;
@@ -477,6 +711,9 @@
             document.getElementById("count-imoveis-energia-solar-total").textContent = counts.imoveis_energia_solar || 0;
             document.getElementById("rate-imoveis-cobranca-solar").textContent = `${counts.taxa_cobranca_solar || 0}%`;
         } catch (error) {
+            if (requestId !== state.dashboardRequestId) {
+                return;
+            }
             showToast(error.message, "error");
         }
     }
@@ -486,9 +723,31 @@
             state.owners = await apiFetch("/api/proprietarios");
             populateOwnerSelect();
             populateOwnerFilter();
+            await loadPropertyTypeOptions();
         } catch (error) {
             showToast(error.message, "error");
         }
+    }
+
+    async function loadPropertyTypeOptions() {
+        const requestId = ++state.propertyTypeOptionsRequestId;
+        const params = new URLSearchParams();
+        state.ownerFilterIds.forEach((ownerId) => params.append("proprietario_id", ownerId));
+        const query = params.toString();
+        try {
+            const options = await apiFetch(`/api/tipos-imovel${query ? `?${query}` : ""}`);
+            if (requestId !== state.propertyTypeOptionsRequestId) {
+                return;
+            }
+            state.propertyTypeOptions = options;
+        } catch (error) {
+            if (requestId !== state.propertyTypeOptionsRequestId) {
+                return;
+            }
+            state.propertyTypeOptions = [];
+            showToast(error.message, "error");
+        }
+        populatePropertyTypeFilter();
     }
 
     async function loadGenerationUnits() {
@@ -536,6 +795,24 @@
         state.quickSearchTimer = window.setTimeout(() => {
             loadModule("busca_rapida");
         }, 180);
+    }
+
+    function handleReportPeriodChange(event) {
+        const option = event.target.closest("[data-report-period]");
+        if (!option || !elements.reportPeriodToggle.contains(option)) {
+            return;
+        }
+
+        const period = option.dataset.reportPeriod;
+        if (!['month', 'year'].includes(period) || state.reportPeriod === period) {
+            return;
+        }
+
+        state.reportPeriod = period;
+        syncReportPeriodToggle();
+        if (state.module === "relatorios") {
+            renderTable();
+        }
     }
 
     async function loadModule(moduleName) {
@@ -624,7 +901,8 @@
         elements.navItems.forEach((item) => item.classList.toggle("is-active", item.dataset.module === moduleName));
         elements.breadcrumbModule.textContent = config.title;
         updateModuleTitle(config.title, 0);
-        elements.moduleDescription.textContent = config.description;
+        elements.moduleDescription.textContent = config.description || "";
+        elements.moduleDescription.hidden = !config.description;
         elements.newRecordLabel.textContent = config.newLabel || `Novo ${config.singular}`;
         setTableMode();
         loadModule(moduleName);
@@ -635,13 +913,14 @@
         const isReports = state.module === "relatorios";
         const isQuickSearch = state.module === "busca_rapida";
         elements.mainContent.classList.toggle("quick-search-mode", isQuickSearch);
-        elements.pageHeading.hidden = isQuickSearch;
         elements.recordsTableCard.hidden = isContracts || isReports || isQuickSearch;
         elements.quickSearchPanel.hidden = !isQuickSearch;
         elements.contractsTables.hidden = !isContracts;
         elements.reportsPanel.hidden = !isReports;
+        elements.reportPeriodToggle.hidden = !isReports;
         elements.globalSummary.hidden = isReports || isQuickSearch;
-        elements.newRecordButton.hidden = isReports || isQuickSearch;
+        elements.topbarSummary.hidden = isReports || isQuickSearch;
+        elements.pageActions.hidden = isReports || isQuickSearch;
         elements.refreshButton.hidden = isQuickSearch;
         const ownerFilterContainer = elements.ownerFilter.closest(".global-filter");
         if (ownerFilterContainer) {
@@ -651,9 +930,14 @@
         if (solarFilterContainer) {
             solarFilterContainer.hidden = isReports || isQuickSearch;
         }
+        const propertyTypeFilterContainer = elements.propertyTypeFilter.closest(".global-filter");
+        if (propertyTypeFilterContainer) {
+            propertyTypeFilterContainer.hidden = isQuickSearch;
+        }
         if (isQuickSearch) {
             window.setTimeout(() => elements.quickSearchInput.focus(), 0);
         }
+        syncReportPeriodToggle();
     }
 
     function updateModuleTitle(title, count) {
@@ -693,8 +977,19 @@
             return endpoint;
         }
         const params = [];
-        if (state.ownerFilterId) {
+        if (state.ownerFilterIds.length) {
+            state.ownerFilterIds.forEach((ownerId) => {
+                params.push(`proprietario_id=${encodeURIComponent(ownerId)}`);
+            });
+        } else if (state.ownerFilterId) {
             params.push(`proprietario_id=${encodeURIComponent(state.ownerFilterId)}`);
+        }
+        if (state.propertyTypeFilterValues.length) {
+            state.propertyTypeFilterValues.forEach((propertyType) => {
+                params.push(`tipo_imovel=${encodeURIComponent(propertyType)}`);
+            });
+        } else if (state.propertyTypeFilterValue) {
+            params.push(`tipo_imovel=${encodeURIComponent(state.propertyTypeFilterValue)}`);
         }
         if (state.solarFilterValue && ["dashboard", "imoveis", "contratos"].includes(context)) {
             params.push(`adm_propriedade=${encodeURIComponent(state.solarFilterValue)}`);
@@ -872,26 +1167,147 @@
         };
     }
 
+    function reportPeriodText() {
+        return state.reportPeriod === "year" ? "ano" : "mês";
+    }
+
+    function reportPeriodMultiplier() {
+        return state.reportPeriod === "year" ? 12 : 1;
+    }
+
+    function scaleReportMoney(value) {
+        if (value === null || value === undefined || value === "") {
+            return value;
+        }
+
+        const number = Number(value);
+        return Number.isFinite(number) ? number * reportPeriodMultiplier() : value;
+    }
+
+    function reportDisplayValue(record, key) {
+        const value = record ? record[key] : null;
+        return REPORT_ANNUALIZABLE_KEYS.has(key) ? scaleReportMoney(value) : value;
+    }
+
+    function reportColumnLabel(column) {
+        const period = reportPeriodText();
+        const labels = {
+            aluguel_bruto: `Aluguel bruto (${period})`,
+            iptu_mensal: state.reportPeriod === "year" ? "IPTU anual" : "IPTU mensal",
+            condominio_descontado: `Condomínio (${period})`,
+            aluguel_liquido: `Aluguel líquido (${period})`,
+        };
+        return labels[column.key] || column.label;
+    }
+
+    function reportColumns(config) {
+        return config.columns.map((column) => ({
+            ...column,
+            label: reportColumnLabel(column),
+            value: (record) => reportDisplayValue(record, column.key),
+        }));
+    }
+
+    function reportAverageValue(records, key) {
+        const values = records
+            .map((record) => reportDisplayValue(record, key))
+            .filter((value) => value !== null && value !== undefined && value !== "")
+            .map(Number)
+            .filter(Number.isFinite);
+        if (!values.length) {
+            return null;
+        }
+        return values.reduce((total, value) => total + value, 0) / values.length;
+    }
+
+    function reportAverageValues(records) {
+        return REPORT_AVERAGE_KEYS.reduce((averages, key) => {
+            averages[key] = reportAverageValue(records, key);
+            return averages;
+        }, {});
+    }
+
+    function renderReportAverageRow(columns, averages, label, sort) {
+        const cells = columns.map((column, index) => {
+            const sortedClass = sortCellClass(sort, column.key);
+            if (index === 0) {
+                return `<th class="${sortedClass} report-average-label" scope="row">${escapeHtml(label)}</th>`;
+            }
+            if (!REPORT_AVERAGE_KEYS.includes(column.key)) {
+                return `<td class="${sortedClass}" aria-hidden="true"></td>`;
+            }
+            const value = averages[column.key];
+            const formattedValue = value === null ? "—" : formatCurrency(value);
+            return `<td class="${sortedClass} report-money-cell report-average-cell"><span class="report-average-badge">${formattedValue}</span></td>`;
+        }).join("");
+        return `<tr class="report-average-row">${cells}</tr>`;
+    }
+
+    function syncReportPeriodToggle() {
+        const isReports = state.module === "relatorios";
+        elements.reportPeriodToggle.hidden = !isReports;
+        elements.reportPeriodOptions.forEach((option) => {
+            const isActive = option.dataset.reportPeriod === state.reportPeriod;
+            option.classList.toggle("is-active", isActive);
+            option.setAttribute("aria-pressed", String(isActive));
+        });
+    }
+
+    function updateReportPeriodLabels() {
+        const period = reportPeriodText();
+        const labels = {
+            totalGross: `Total aluguel bruto (${period})`,
+            totalIptu: `Total IPTU (proprietário) (${period})`,
+            totalCondominium: `Total condomínio (proprietário) (${period})`,
+            totalNet: `Total aluguel líquido (${period})`,
+        };
+
+        Object.entries(labels).forEach(([key, label]) => {
+            if (elements.reportLabels[key]) {
+                elements.reportLabels[key].textContent = label;
+            }
+        });
+        elements.reportSummaryGrid.setAttribute("aria-label", `Resumo financeiro ${period}`);
+    }
+
     function renderReportsTable(config, sort) {
         const summary = state.reportSummary || emptyReportSummary();
-        elements.reportTotalGross.textContent = formatCurrency(summary.total_aluguel_bruto);
-        elements.reportTotalIptu.textContent = formatCurrency(summary.total_iptu_descontado);
-        elements.reportTotalCondominium.textContent = formatCurrency(summary.total_condominio_descontado);
-        elements.reportTotalNet.textContent = formatCurrency(summary.total_aluguel_liquido);
+        const columns = reportColumns(config);
+        updateReportPeriodLabels();
+        elements.reportTotalGross.textContent = formatCurrency(scaleReportMoney(summary.total_aluguel_bruto));
+        elements.reportTotalIptu.textContent = formatCurrency(scaleReportMoney(summary.total_iptu_descontado));
+        elements.reportTotalCondominium.textContent = formatCurrency(scaleReportMoney(summary.total_condominio_descontado));
+        elements.reportTotalNet.textContent = formatCurrency(scaleReportMoney(summary.total_aluguel_liquido));
         elements.reportTotalMargin.textContent = formatPercentage(summary.margem_liquida_percentual);
-        elements.reportsHead.innerHTML = `<tr>${config.columns.map((column) => renderSortHeader(column, sort)).join("")}</tr>`;
+        elements.reportsHead.innerHTML = `<tr>${columns.map((column) => renderSortHeader(column, sort)).join("")}</tr>`;
         const activeRecords = state.records.filter((record) => record.tipo_linha !== "DESOCUPADO_DESPESA");
         const vacantRecords = state.records.filter((record) => record.tipo_linha === "DESOCUPADO_DESPESA");
-        const activeRows = sortRecords(activeRecords, config.columns, sort)
+        const activeAverageRow = activeRecords.length
+            ? renderReportAverageRow(
+                columns,
+                reportAverageValues(activeRecords),
+                "Valor médio",
+                sort,
+            )
+            : "";
+        const activeRows = sortRecords(activeRecords, columns, sort)
             .map((record) => renderReportRow(record, sort))
             .join("");
-        const vacantRows = sortRecords(vacantRecords, config.columns, sort)
+        const vacantRows = sortRecords(vacantRecords, columns, sort)
             .map((record) => renderReportRow(record, sort))
             .join("");
         const vacantSection = vacantRecords.length
-            ? `<tr class="report-vacant-section"><th colspan="${config.columns.length}" scope="rowgroup">IMÓVEIS DESOCUPADOS / DESPESAS</th></tr>`
+            ? `<tr class="report-vacant-section"><th colspan="${columns.length}" scope="rowgroup">IMÓVEIS DESOCUPADOS / DESPESAS</th></tr>`
             : "";
-        elements.reportsBody.innerHTML = `${activeRows}${vacantSection}${vacantRows}`;
+        const vacantAverageRow = vacantRecords.length
+            ? renderReportAverageRow(
+                columns,
+                reportAverageValues(vacantRecords),
+                "Valor médio — desocupados / despesas",
+                sort,
+            )
+            : "";
+        elements.reportsBody.innerHTML = `${activeAverageRow}${activeRows}${vacantSection}${vacantAverageRow}${vacantRows}`;
         elements.recordCount.textContent = `${state.records.length} ${state.records.length === 1 ? "registro" : "registros"}`;
         elements.reportsEmpty.hidden = state.records.length !== 0;
     }
@@ -1052,13 +1468,16 @@
         const expenseClass = isVacant ? " report-expense-cell" : "";
         const netClass = isVacant ? " report-vacant-net" : "";
         const avatar = isVacant ? "D" : "R";
-        const gross = isVacant ? "—" : formatCurrency(record.aluguel_bruto);
-        const iptu = isVacant && Number(record.iptu_mensal) <= 0
+        const gross = isVacant ? "—" : formatCurrency(reportDisplayValue(record, "aluguel_bruto"));
+        const iptuValue = reportDisplayValue(record, "iptu_mensal");
+        const condominiumValue = reportDisplayValue(record, "condominio_descontado");
+        const netValue = reportDisplayValue(record, "aluguel_liquido");
+        const iptu = isVacant && Number(iptuValue) <= 0
             ? "—"
-            : formatCurrency(record.iptu_mensal);
-        const condominium = isVacant && Number(record.condominio_descontado) <= 0
+            : formatCurrency(iptuValue);
+        const condominium = isVacant && Number(condominiumValue) <= 0
             ? "—"
-            : formatCurrency(record.condominio_descontado);
+            : formatCurrency(condominiumValue);
         const paymentDay = record.dia_pagamento == null ? "—" : escapeHtml(record.dia_pagamento);
         const margin = isVacant ? "—" : formatPercentage(record.margem_liquida_percentual);
         return `<tr class="${rowClass}">
@@ -1066,7 +1485,7 @@
             <td class="${sortCellClass(sort, "aluguel_bruto")} report-money-cell">${gross}</td>
             <td class="${sortCellClass(sort, "iptu_mensal")} report-money-cell${expenseClass}">${iptu}</td>
             <td class="${sortCellClass(sort, "condominio_descontado")} report-money-cell${expenseClass}">${condominium}</td>
-            <td class="${sortCellClass(sort, "aluguel_liquido")} report-money-cell${netClass}">${formatCurrency(record.aluguel_liquido)}</td>
+            <td class="${sortCellClass(sort, "aluguel_liquido")} report-money-cell${netClass}">${formatCurrency(netValue)}</td>
             <td class="${sortCellClass(sort, "dia_pagamento")} report-day-cell">${paymentDay}</td>
             <td class="${sortCellClass(sort, "margem_liquida_percentual")} report-percentage-cell">${margin}</td>
         </tr>`;
@@ -1139,9 +1558,12 @@
         const distributionButton = state.module === "energia_solar"
             ? `<button class="row-action distribution-action" type="button" data-action="distribution" data-id="${id}">Analisar distribuição</button>`
             : "";
-        return `${distributionButton}<button class="row-action" type="button" data-action="view" data-id="${id}">Visualizar</button>
-            <button class="row-action" type="button" data-action="edit" data-id="${id}">Editar</button>
-            <button class="row-action delete" type="button" data-action="delete" data-id="${id}">Excluir</button>`;
+        return `<div class="actions-content">
+            ${distributionButton}
+            <button class="row-action view-action" type="button" data-action="view" data-id="${id}">Ver</button>
+            <button class="row-action edit-action" type="button" data-action="edit" data-id="${id}">Editar</button>
+            <button class="row-action delete delete-action" type="button" data-action="delete" data-id="${id}">Excluir</button>
+        </div>`;
     }
 
     async function handleTableAction(event) {
@@ -1775,21 +2197,25 @@
     }
 
     function populateOwnerFilter() {
-        const select = elements.ownerFilter;
-        if (!select) {
+        const filter = elements.ownerFilter;
+        if (!filter) {
             return;
         }
+        const available = new Set(state.owners.map((owner) => String(owner.id)));
+        state.ownerFilterIds = state.ownerFilterIds.filter((ownerId) => available.has(String(ownerId)));
+        syncMultiFilterState();
+        renderMultiFilter(filter, getMultiFilterOptions("owner"), state.ownerFilterIds, "owner");
+    }
 
-        const currentValue = state.ownerFilterId;
-        select.innerHTML = "<option value=\"\">TODOS</option>";
-        state.owners.forEach((owner) => select.add(new Option(owner.nome_completo, owner.id)));
-
-        if (currentValue && state.owners.some((owner) => String(owner.id) === String(currentValue))) {
-            select.value = currentValue;
-        } else {
-            state.ownerFilterId = "";
-            select.value = "";
+    function populatePropertyTypeFilter() {
+        const filter = elements.propertyTypeFilter;
+        if (!filter) {
+            return;
         }
+        const available = new Set(state.propertyTypeOptions);
+        state.propertyTypeFilterValues = state.propertyTypeFilterValues.filter((propertyType) => available.has(propertyType));
+        syncMultiFilterState();
+        renderMultiFilter(filter, getMultiFilterOptions("property-type"), state.propertyTypeFilterValues, "property-type");
     }
 
     function populateContractSelects() {

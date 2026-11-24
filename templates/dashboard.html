@@ -61,8 +61,23 @@
                 <span></span><span></span><span></span>
             </button>
             <div class="topbar-context">
-                <span class="eyebrow">Workspace</span>
                 <span class="breadcrumb">Gestão imobiliária <span>/</span> <strong id="breadcrumb-module">Proprietários</strong></span>
+            </div>
+            <div class="topbar-summary" id="topbar-summary" aria-label="Indicadores de cadastros">
+                <article class="topbar-summary-card topbar-summary-card-blue">
+                    <div class="topbar-summary-icon" aria-hidden="true">♙</div>
+                    <div class="topbar-summary-data">
+                        <span>Proprietários</span>
+                        <strong id="count-proprietarios">0</strong>
+                    </div>
+                </article>
+                <article class="topbar-summary-card topbar-summary-card-purple">
+                    <div class="topbar-summary-icon" aria-hidden="true">◉</div>
+                    <div class="topbar-summary-data">
+                        <span>Inquilinos / Clientes</span>
+                        <strong id="count-inquilinos">0</strong>
+                    </div>
+                </article>
             </div>
             <div class="topbar-user" aria-label="Usuário atual">
                 <div class="avatar">P</div>
@@ -74,89 +89,97 @@
         </header>
 
         <div class="page-content">
-            <section class="page-heading" id="page-heading">
-                <div>
-                    <span class="eyebrow">Visão geral</span>
-                    <h1>Olá, administrador <span class="wave" aria-hidden="true">✦</span></h1>
-                    <p>Acompanhe seus cadastros e mantenha sua operação organizada.</p>
+            <section class="summary-overview" id="global-summary" aria-label="Resumo dos cadastros">
+                <div class="summary-grid">
+                    <article class="summary-card summary-card-green">
+                        <div class="card-icon" aria-hidden="true">▦</div>
+                        <div class="card-data">
+                            <span>Imóveis</span>
+                            <strong id="count-imoveis-total">0</strong>
+                            <small>imóveis cadastrados</small>
+                        </div>
+                    </article>
+                    <article class="summary-card summary-card-amber">
+                        <div class="card-icon" aria-hidden="true">▤</div>
+                        <div class="card-data">
+                            <span>Contratos</span>
+                            <strong id="count-contratos">0</strong>
+                            <small>contratos cadastrados</small>
+                        </div>
+                    </article>
                 </div>
+
+                <aside class="property-operations-panel" aria-label="Indicadores operacionais de imóveis">
+                    <div class="property-card-columns">
+                        <section class="property-operation" aria-labelledby="property-rental-title">
+                            <h3 id="property-rental-title">Locação</h3>
+                            <div class="property-metric">
+                                <span>Total imóveis geridos</span>
+                                <strong id="count-imoveis-locacao">0</strong>
+                            </div>
+                            <div class="property-metric">
+                                <span>Imóveis alugados/total</span>
+                                <strong><span id="count-imoveis-alugados">0</span> de <span id="count-imoveis-locacao-total">0</span></strong>
+                            </div>
+                            <div class="property-metric">
+                                <span>Taxa de ocupação</span>
+                                <strong id="rate-imoveis-ocupacao">0%</strong>
+                            </div>
+                        </section>
+                        <section class="property-operation" aria-labelledby="property-solar-title">
+                            <h3 id="property-solar-title">Energia Solar</h3>
+                            <div class="property-metric">
+                                <span>Total imóveis geridos</span>
+                                <strong id="count-imoveis-energia-solar">0</strong>
+                            </div>
+                            <div class="property-metric">
+                                <span>Energia cobrada/total</span>
+                                <strong><span id="count-imoveis-cobranca-solar">0</span> de <span id="count-imoveis-energia-solar-total">0</span></strong>
+                            </div>
+                            <div class="property-metric">
+                                <span>Taxa de cobrança</span>
+                                <strong id="rate-imoveis-cobranca-solar">0%</strong>
+                            </div>
+                        </section>
+                    </div>
+                </aside>
+            </section>
+
+            <div class="page-actions" id="page-actions">
                 <button class="primary-button" id="new-record-button" type="button">
                     <span class="button-plus" aria-hidden="true">+</span>
                     <span id="new-record-label">Novo proprietário</span>
                 </button>
-            </section>
-
-            <section class="summary-grid" id="global-summary" aria-label="Resumo dos cadastros">
-                <article class="summary-card summary-card-blue">
-                    <div class="card-icon" aria-hidden="true">♙</div>
-                    <div class="card-data">
-                        <span>Proprietários</span>
-                        <strong id="count-proprietarios">0</strong>
-                        <small>pessoas cadastradas</small>
-                    </div>
-                </article>
-                <article class="summary-card summary-card-purple">
-                    <div class="card-icon" aria-hidden="true">◉</div>
-                    <div class="card-data">
-                        <span>Inquilinos / Clientes</span>
-                        <strong id="count-inquilinos">0</strong>
-                        <small>pessoas cadastradas</small>
-                    </div>
-                </article>
-                <article class="summary-card summary-card-green">
-                    <div class="card-icon" aria-hidden="true">▦</div>
-                    <div class="card-data property-card-data">
-                        <span class="property-card-title">Imóveis</span>
-                        <div class="property-card-columns">
-                            <section class="property-operation" aria-labelledby="property-rental-title">
-                                <h3 id="property-rental-title">Locação</h3>
-                                <div class="property-metric">
-                                    <span>Total imóveis geridos</span>
-                                    <strong id="count-imoveis-locacao">0</strong>
-                                </div>
-                                <div class="property-metric">
-                                    <span>Imóveis alugados/total</span>
-                                    <strong><span id="count-imoveis-alugados">0</span> de <span id="count-imoveis-locacao-total">0</span></strong>
-                                </div>
-                                <div class="property-metric">
-                                    <span>Taxa de ocupação</span>
-                                    <strong id="rate-imoveis-ocupacao">0%</strong>
-                                </div>
-                            </section>
-                            <section class="property-operation" aria-labelledby="property-solar-title">
-                                <h3 id="property-solar-title">Energia Solar</h3>
-                                <div class="property-metric">
-                                    <span>Total imóveis geridos</span>
-                                    <strong id="count-imoveis-energia-solar">0</strong>
-                                </div>
-                                <div class="property-metric">
-                                    <span>Energia cobrada/total</span>
-                                    <strong><span id="count-imoveis-cobranca-solar">0</span> de <span id="count-imoveis-energia-solar-total">0</span></strong>
-                                </div>
-                                <div class="property-metric">
-                                    <span>Taxa de cobrança</span>
-                                    <strong id="rate-imoveis-cobranca-solar">0%</strong>
-                                </div>
-                            </section>
-                        </div>
-                    </div>
-                </article>
-            </section>
+            </div>
 
             <section class="module-section">
                 <div class="module-heading">
                     <div>
                         <span class="eyebrow">Cadastros</span>
                         <h2 id="module-title"><span id="module-title-label">Proprietários</span> <span id="module-title-count" class="module-title-count">(0)</span></h2>
-                        <p id="module-description">Gerencie as pessoas responsáveis pelos seus imóveis.</p>
+                        <p id="module-description" hidden></p>
                     </div>
                     <div class="module-meta">
-                        <label class="global-filter" for="owner-filter">
+                        <div class="global-filter" data-filter-container="owner">
                             <span>Proprietário</span>
-                            <select id="owner-filter" aria-label="Filtrar por proprietário">
-                                <option value="">TODOS</option>
-                            </select>
-                        </label>
+                            <div class="multi-filter" id="owner-filter" data-filter-kind="owner">
+                                <button class="multi-filter-trigger" id="owner-filter-trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="owner-filter-menu">
+                                    <span data-filter-label>TODOS</span>
+                                    <span class="multi-filter-chevron" aria-hidden="true">v</span>
+                                </button>
+                                <div class="multi-filter-menu" id="owner-filter-menu" role="group" aria-label="Filtrar por proprietário" hidden></div>
+                            </div>
+                        </div>
+                        <div class="global-filter" data-filter-container="property-type">
+                            <span>Tipo de imóvel</span>
+                            <div class="multi-filter" id="property-type-filter" data-filter-kind="property-type">
+                                <button class="multi-filter-trigger" id="property-type-filter-trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="property-type-filter-menu">
+                                    <span data-filter-label>TODOS</span>
+                                    <span class="multi-filter-chevron" aria-hidden="true">v</span>
+                                </button>
+                                <div class="multi-filter-menu" id="property-type-filter-menu" role="group" aria-label="Filtrar por tipo de imóvel" hidden></div>
+                            </div>
+                        </div>
                         <label class="global-filter" for="solar-filter">
                             <span>Cobrança solar</span>
                             <select id="solar-filter" aria-label="Filtrar por cobrança solar">
@@ -165,6 +188,13 @@
                                 <option value="0">NÃO</option>
                             </select>
                         </label>
+                        <div class="report-period-toggle" id="report-period-toggle" role="group" aria-label="Período do relatório" hidden>
+                            <span class="report-period-toggle-label">Período</span>
+                            <div class="report-period-toggle-options">
+                                <button class="report-period-option is-active" type="button" data-report-period="month" aria-pressed="true">MÊS</button>
+                                <button class="report-period-option" type="button" data-report-period="year" aria-pressed="false">ANO</button>
+                            </div>
+                        </div>
                         <span class="record-count" id="record-count">0 registros</span>
                         <button class="secondary-button" id="refresh-button" type="button" aria-label="Atualizar listagem">↻ <span>Atualizar</span></button>
                     </div>
@@ -275,19 +305,19 @@
                 <div class="reports-panel" id="reports-panel" hidden>
                     <section class="report-summary-grid" aria-label="Resumo financeiro mensal">
                         <article class="report-summary-card report-summary-card-blue">
-                            <span>Total aluguel bruto</span>
+                            <span data-report-label="total-gross">Total aluguel bruto (mês)</span>
                             <strong id="report-total-gross">R$ 0,00</strong>
                         </article>
                         <article class="report-summary-card report-summary-card-amber">
-                            <span>Total IPTU (proprietário)</span>
+                            <span data-report-label="total-iptu">Total IPTU (proprietário) (mês)</span>
                             <strong id="report-total-iptu">R$ 0,00</strong>
                         </article>
                         <article class="report-summary-card report-summary-card-purple">
-                            <span>Total condomínio (proprietário)</span>
+                            <span data-report-label="total-condominium">Total condomínio (proprietário) (mês)</span>
                             <strong id="report-total-condominium">R$ 0,00</strong>
                         </article>
                         <article class="report-summary-card report-summary-card-green">
-                            <span>Total aluguel líquido</span>
+                            <span data-report-label="total-net">Total aluguel líquido (mês)</span>
                             <strong id="report-total-net">R$ 0,00</strong>
                         </article>
                         <article class="report-summary-card report-summary-card-teal">

@@ -1024,13 +1024,34 @@ def optional_foreign_key(
     return parse_foreign_key(value, label, table, db)
 
 
-def optional_owner_filter(db: sqlite3.Connection) -> int | None:
-    """Parse the shared owner filter, keeping an absent/empty value global."""
+def optional_owner_filter(db: sqlite3.Connection) -> tuple[int, ...] | None:
+    """Parse repeated owner filters, keeping absent/empty values global."""
 
-    value = request.args.get("proprietario_id")
-    if value is None or not str(value).strip():
-        return None
-    return parse_foreign_key(value, "proprietário", "proprietario", db)
+    values = request.args.getlist("proprietario_id")
+    owner_ids: list[int] = []
+    for value in values:
+        if value is None or not str(value).strip():
+            continue
+        owner_id = parse_foreign_key(value, "proprietário", "proprietario", db)
+        if owner_id not in owner_ids:
+            owner_ids.append(owner_id)
+    return tuple(owner_ids) or None
+
+
+def optional_property_type_filter() -> tuple[str, ...] | None:
+    """Parse repeated property-type filters, keeping empty values global."""
+
+    values = request.args.getlist("tipo_imovel")
+    property_types: list[str] = []
+    for value in values:
+        if value is None or not str(value).strip():
+            continue
+        property_type = clean_text(value)
+        if property_type not in TIPOS_IMOVEL:
+            raise ValueError("Tipo de imóvel inválido.")
+        if property_type not in property_types:
+            property_types.append(property_type)
+    return tuple(property_types) or None
 
 
 def optional_boolean_filter(value: Any, label: str) -> int | None:
@@ -1041,24 +1062,43 @@ def optional_boolean_filter(value: Any, label: str) -> int | None:
     return parse_boolean(value, label)
 
 
-def property_filter_clause(db: sqlite3.Connection) -> tuple[str, tuple[Any, ...]]:
-    """Build the shared property scope used by the dashboard and property-based lists."""
+def property_filter_conditions(
+    db: sqlite3.Connection, *, include_solar: bool = True
+) -> tuple[list[str], tuple[Any, ...]]:
+    """Build the shared property predicates used by filtered endpoints."""
 
-    owner_id = optional_owner_filter(db)
-    solar_charge = optional_boolean_filter(
-        request.args.get("adm_propriedade"), "Cobrança solar"
+    owner_ids = optional_owner_filter(db)
+    property_types = optional_property_type_filter()
+    solar_charge = (
+        optional_boolean_filter(
+            request.args.get("adm_propriedade"), "Cobrança solar"
+        )
+        if include_solar
+        else None
     )
-    conditions = []
+    conditions: list[str] = []
     params: list[Any] = []
-    if owner_id is not None:
-        conditions.append("i.responsavel = ?")
-        params.append(owner_id)
+    if owner_ids is not None:
+        placeholders = ", ".join("?" for _ in owner_ids)
+        conditions.append(f"i.responsavel IN ({placeholders})")
+        params.extend(owner_ids)
+    if property_types is not None:
+        placeholders = ", ".join("?" for _ in property_types)
+        conditions.append(f"i.tipo_imovel IN ({placeholders})")
+        params.extend(property_types)
     if solar_charge is not None:
         conditions.append("i.adm_propriedade = ?")
         params.append(solar_charge)
 
+    return conditions, tuple(params)
+
+
+def property_filter_clause(db: sqlite3.Connection) -> tuple[str, tuple[Any, ...]]:
+    """Build the shared property scope used by the dashboard and property-based lists."""
+
+    conditions, params = property_filter_conditions(db)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    return where_clause, tuple(params)
+    return where_clause, params
 
 
 def parse_contract_date(value: Any, label: str) -> date:
@@ -2553,13 +2593,8 @@ def quick_search_response(
 def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
     """Build the monthly financial report from active contracts and vacant properties."""
 
-    owner_id = optional_owner_filter(db)
-    conditions = []
-    query_params: list[Any] = []
-    if owner_id is not None:
-        conditions.append("i.responsavel = ?")
-        query_params.append(owner_id)
-    owner_clause = f"AND {' AND '.join(conditions)}" if conditions else ""
+    conditions, query_params = property_filter_conditions(db, include_solar=False)
+    property_clause = f"AND {' AND '.join(conditions)}" if conditions else ""
 
     rows = db.execute(
         f"""
@@ -2608,7 +2643,7 @@ def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
                   )
               )
         )
-        {owner_clause}
+        {property_clause}
         ORDER BY i.apelido COLLATE NOCASE, i.id
         """,
         query_params,
@@ -2642,7 +2677,7 @@ def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
                   AND COALESCE(i.valor_condominio, 0) > 0
               )
           )
-        {owner_clause}
+        {property_clause}
         ORDER BY i.apelido COLLATE NOCASE, i.id
         """,
         query_params,
@@ -2798,6 +2833,34 @@ def register_routes(app: Flask) -> None:
             ).fetchone()[0],
         }
         return jsonify({"counts": counts})
+
+    @app.get("/api/tipos-imovel")
+    def property_types_collection():
+        db = get_db()
+        try:
+            owner_ids = optional_owner_filter(db)
+        except ValueError as error:
+            return error_response(str(error))
+
+        conditions = ["i.tipo_imovel IS NOT NULL", "TRIM(i.tipo_imovel) <> ''"]
+        query_params: list[Any] = []
+        if owner_ids is not None:
+            placeholders = ", ".join("?" for _ in owner_ids)
+            conditions.append(f"i.responsavel IN ({placeholders})")
+            query_params.extend(owner_ids)
+
+        rows = db.execute(
+            f"""
+            SELECT DISTINCT i.tipo_imovel
+            FROM imoveis AS i
+            WHERE {' AND '.join(conditions)}
+            """,
+            query_params,
+        ).fetchall()
+        available_types = {row["tipo_imovel"] for row in rows}
+        return jsonify(
+            [property_type for property_type in TIPOS_IMOVEL if property_type in available_types]
+        )
 
     @app.get("/api/relatorios")
     def financial_reports():
@@ -3089,12 +3152,33 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         if request.method == "GET":
             try:
-                owner_id = optional_owner_filter(db)
+                owner_ids = optional_owner_filter(db)
+                property_types = optional_property_type_filter()
             except ValueError as error:
                 return error_response(str(error))
 
-            where_clause = "WHERE u.responsavel = ?" if owner_id is not None else ""
-            query_params = (owner_id,) if owner_id is not None else ()
+            conditions: list[str] = []
+            query_params: list[Any] = []
+            if owner_ids is not None:
+                placeholders = ", ".join("?" for _ in owner_ids)
+                conditions.append(f"u.responsavel IN ({placeholders})")
+                query_params.extend(owner_ids)
+            if property_types is not None:
+                placeholders = ", ".join("?" for _ in property_types)
+                conditions.append(
+                    """EXISTS (
+                        SELECT 1
+                        FROM imovel_unidade_geradora AS link_filter
+                        JOIN imoveis AS property_filter
+                          ON property_filter.id = link_filter.imovel_id
+                        WHERE link_filter.unidade_geradora_id = u.id
+                          AND property_filter.responsavel = u.responsavel
+                          AND property_filter.tipo_imovel IN (%s)
+                    )"""
+                    % placeholders
+                )
+                query_params.extend(property_types)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             rows = db.execute(
                 f"""
                 SELECT u.id, u.responsavel, u.cep, u.endereco, u.estado, u.cidade,
@@ -3107,7 +3191,7 @@ def register_routes(app: Flask) -> None:
                 {where_clause}
                 ORDER BY u.inscricao_mun COLLATE NOCASE, u.id
                 """,
-                query_params,
+                tuple(query_params),
             ).fetchall()
             return jsonify([generation_unit_dict(row) for row in rows])
 
