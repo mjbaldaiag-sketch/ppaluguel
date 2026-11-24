@@ -16,6 +16,10 @@
 
         <div class="sidebar-label">Módulos</div>
         <nav class="main-nav">
+            <button class="nav-item" type="button" data-module="busca_rapida">
+                <span class="nav-icon" aria-hidden="true">⌕</span>
+                <span>Busca rápida</span>
+            </button>
             <button class="nav-item is-active" type="button" data-module="proprietarios">
                 <span class="nav-icon" aria-hidden="true">⌂</span>
                 <span>Proprietários</span>
@@ -70,7 +74,7 @@
         </header>
 
         <div class="page-content">
-            <section class="page-heading">
+            <section class="page-heading" id="page-heading">
                 <div>
                     <span class="eyebrow">Visão geral</span>
                     <h1>Olá, administrador <span class="wave" aria-hidden="true">✦</span></h1>
@@ -182,6 +186,40 @@
                     <div class="loading-state" id="loading-state" hidden>
                         <div class="spinner" aria-hidden="true"></div>
                         <span>Carregando registros...</span>
+                    </div>
+                </div>
+
+                <div class="quick-search-panel" id="quick-search-panel" hidden>
+                    <div class="quick-search-toolbar">
+                        <label class="quick-search-field" for="quick-search-input">
+                            <span aria-hidden="true">⌕</span>
+                            <input
+                                id="quick-search-input"
+                                type="search"
+                                autocomplete="off"
+                                placeholder="Buscar imóvel, CPF, inquilino, identificador ou valor..."
+                                aria-label="Buscar em todos os campos"
+                            >
+                        </label>
+                        <span class="quick-search-hint" id="quick-search-hint">Busca instantânea em todos os campos</span>
+                    </div>
+                    <div class="quick-search-scroll-hint" aria-hidden="true">↔ Deslize horizontalmente para ver todas as colunas</div>
+                    <div class="table-card quick-table-card">
+                        <div class="table-scroll quick-table-scroll">
+                            <table class="records-table quick-search-table">
+                                <thead id="quick-search-head"></thead>
+                                <tbody id="quick-search-body"></tbody>
+                            </table>
+                        </div>
+                        <div class="empty-state" id="quick-search-empty" hidden>
+                            <div class="empty-icon" aria-hidden="true">⌕</div>
+                            <h3>Nenhum resultado encontrado</h3>
+                            <p>Digite outro termo para consultar os imóveis cadastrados.</p>
+                        </div>
+                        <div class="loading-state" id="quick-search-loading" hidden>
+                            <div class="spinner" aria-hidden="true"></div>
+                            <span>Consultando imóveis...</span>
+                        </div>
                     </div>
                 </div>
 

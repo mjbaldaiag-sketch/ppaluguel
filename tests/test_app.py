@@ -1403,6 +1403,171 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(zero_row["aluguel_liquido"], 0.0)
         self.assertEqual(zero_row["margem_liquida_percentual"], 0.0)
 
+    def test_quick_search_consolidates_properties_and_searches_related_fields(self):
+        owner_payload = self.person_payload("Proprietario Busca Rapida")
+        owner_payload["cpf"] = "123.456.789-09"
+        owner = self.post_json("/api/proprietarios", owner_payload).get_json()
+        vacant_owner_payload = self.person_payload("Proprietario Imovel Vago")
+        vacant_owner_payload["cpf"] = ""
+        vacant_owner = self.post_json(
+            "/api/proprietarios", vacant_owner_payload
+        ).get_json()
+        solar_payload = self.person_payload("Cliente Energia Busca")
+        solar_payload["cpf"] = "123.456.789-09"
+        solar_client = self.post_json(
+            "/api/inquilinos-clientes", solar_payload
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes",
+            self.person_payload("Inquilino Busca Rapida"),
+        ).get_json()
+
+        property_payload = self.property_payload(owner["id"])
+        property_payload.update(
+            {
+                "apelido": "Casa Busca Central",
+                "inscricao_mun": "MUN-ABC-01",
+                "aluguel": "R$ 1.500,00",
+                "numero_energia": "ENER-10",
+                "numero_agua": "AGUA-20",
+                "adm_propriedade": "1",
+                "cliente_energia_solar_id": str(solar_client["id"]),
+                "repasse_iptu": "0",
+                "valor_iptu": "R$ 1.200,00",
+                "repasse_taxa_condominio": "0",
+                "valor_condominio": "R$ 300,00",
+                "imobiliaria": "1",
+                "taxa_adm_imovel": "R$ 50,00",
+            }
+        )
+        rented = self.post_json("/api/imoveis", property_payload).get_json()
+        contract_payload = self.contract_payload(rented["id"], tenant["id"])
+        contract_payload["valor_aluguel"] = "R$ 2.500,00"
+        contract = self.post_json("/api/contratos", contract_payload).get_json()
+        renewal = self.post_json(
+            f"/api/contratos/{contract['id']}/periodos",
+            {
+                "data_inicio": "2027-01-01",
+                "data_fim": "2028-01-01",
+                "valor_aluguel": "R$ 3.000,00",
+                "dia_pagamento": "10",
+            },
+        )
+        self.assertEqual(renewal.status_code, 201)
+
+        vacant_payload = self.property_payload(vacant_owner["id"])
+        vacant_payload.update(
+            {
+                "apelido": "Imovel Sem Contrato",
+                "cep": "",
+                "endereco": "",
+                "numero": "",
+                "cidade": "",
+                "estado": "",
+                "aluguel": "R$ 900,00",
+                "valor_iptu": "",
+                "valor_condominio": "",
+                "cliente_energia_solar_id": "",
+            }
+        )
+        vacant = self.post_json("/api/imoveis", vacant_payload).get_json()
+
+        response = self.client.get("/api/busca-rapida")
+        self.assertEqual(response.status_code, 200)
+        rows = response.get_json()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            [row["imovel_id"] for row in rows],
+            sorted([rented["id"], vacant["id"]], key=lambda item: item),
+        )
+
+        rented_row = next(row for row in rows if row["imovel_id"] == rented["id"])
+        self.assertEqual(rented_row["id_municipal"], "MUN-ABC-01")
+        self.assertEqual(rented_row["cpf_responsavel"], "12345678909")
+        self.assertEqual(rented_row["responsavel_nome"], "PROPRIETARIO BUSCA RAPIDA")
+        self.assertEqual(rented_row["cep"], "01001000")
+        self.assertEqual(rented_row["endereco"], "PRAÇA DA SÉ")
+        self.assertEqual(rented_row["numero"], "100")
+        self.assertEqual(rented_row["cidade"], "SÃO PAULO")
+        self.assertEqual(rented_row["estado"], "SP")
+        self.assertEqual(rented_row["inquilino"], "INQUILINO BUSCA RAPIDA")
+        self.assertEqual(rented_row["cliente_energia_solar"], "CLIENTE ENERGIA BUSCA")
+        self.assertEqual(rented_row["aluguel_bruto"], 3000.0)
+        self.assertEqual(rented_row["aluguel_liquido"], 2550.0)
+        self.assertEqual(rented_row["iptu_anual"], 1200.0)
+        self.assertEqual(rented_row["iptu_mensal"], 100.0)
+        self.assertEqual(rented_row["valor_condominio"], 300.0)
+        self.assertEqual(rented_row["repasse_iptu"], 0)
+        self.assertEqual(rented_row["repasse_condominio"], 0)
+        self.assertEqual(rented_row["contrato_ativo"], 1)
+        self.assertEqual(rented_row["cobranca_solar"], 1)
+        self.assertEqual(rented_row["numero_energia"], "ENER-10")
+        self.assertEqual(rented_row["numero_agua"], "AGUA-20")
+
+        vacant_row = next(row for row in rows if row["imovel_id"] == vacant["id"])
+        self.assertEqual(vacant_row["aluguel_bruto"], 900.0)
+        self.assertEqual(vacant_row["aluguel_liquido"], 900.0)
+        self.assertIsNone(vacant_row["inquilino"])
+        self.assertEqual(vacant_row["contrato_ativo"], 0)
+        self.assertIsNone(vacant_row["iptu_anual"])
+        self.assertIsNone(vacant_row["iptu_mensal"])
+
+        for term in (
+            "MUN-ABC",
+            "12345678909",
+            "PROPRIETARIO BUSCA",
+            "01001",
+            "PRAÇA DA SÉ",
+            "SÃO PAULO",
+            "INQUILINO BUSCA",
+            "CLIENTE ENERGIA",
+            "ENER-10",
+            "2550",
+        ):
+            result = self.client.get("/api/busca-rapida", query_string={"q": term})
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual([row["imovel_id"] for row in result.get_json()], [rented["id"]])
+
+        self.assertEqual(
+            self.client.get(
+                "/api/busca-rapida", query_string={"q": "nao-existe"}
+            ).get_json(),
+            [],
+        )
+
+    def test_quick_search_markup_and_frontend_hooks(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn('data-module="busca_rapida"', page)
+        self.assertIn('id="quick-search-input"', page)
+        self.assertIn('id="quick-search-head"', page)
+        self.assertIn('id="quick-search-body"', page)
+        self.assertIn("Busca rápida", page)
+        source = Path("static/js/app.js").read_text(encoding="utf-8")
+        styles = Path("static/css/style.css").read_text(encoding="utf-8")
+        self.assertIn('endpoint: "/api/busca-rapida"', source)
+        self.assertIn('key: "responsavel_nome", label: "Nome responsável"', source)
+        self.assertIn('key: "cep", label: "CEP"', source)
+        self.assertIn('key: "endereco", label: "Endereço"', source)
+        self.assertIn("propertyAddress(record)", source)
+        self.assertIn("navigator.clipboard", source)
+        self.assertIn('data-action="copy-quick-cell"', source)
+        self.assertIn("quick-cell-content", source)
+        self.assertIn("quick-cell-copy-button", source)
+        self.assertIn('column.type === "boolean"', source)
+        self.assertNotIn("quick-copy-column", source)
+        self.assertNotIn("quick-copy-button", source)
+        self.assertNotIn('data-action="copy-quick"', source)
+        self.assertIn('showToast("Valor copiado")', source)
+        self.assertIn("quick-search-table", styles)
+        self.assertIn("position: sticky", styles)
+        self.assertIn("quick-cell-content", styles)
+        self.assertIn("quick-cell-copy-button", styles)
+        self.assertIn("margin: 5px clamp(4px, .7vw, 10px) 0", styles)
+        self.assertIn("padding: 0 8px 1px", styles)
+        self.assertIn("border-right: 1px solid rgba(126, 141, 163, .16)", styles)
+        self.assertNotIn("quick-copy-column", styles)
+        self.assertNotIn("quick-copy-button", styles)
+
     def test_contract_period_history_renewal_edit_and_revert(self):
         owner = self.post_json(
             "/api/proprietarios", self.person_payload("Proprietário dos Períodos")

@@ -417,7 +417,6 @@ def migrate_database(db: sqlite3.Connection) -> None:
         )
         """
     )
-
     contract_columns = {
         row["name"] for row in db.execute("PRAGMA table_info(contratos)").fetchall()
     }
@@ -437,6 +436,13 @@ def migrate_database(db: sqlite3.Connection) -> None:
             END
             """
         )
+
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_contratos_imovel_status_inicio
+            ON contratos (imovel_id, status, data_inicio, id)
+        """
+    )
 
     db.executescript(
         """
@@ -2258,17 +2264,290 @@ def report_number(value: Decimal) -> float:
 def report_property_expenses(row: sqlite3.Row) -> tuple[Decimal, Decimal]:
     """Calculate the owner-borne monthly IPTU and condominium expenses."""
 
+    row_keys = row.keys()
+    iptu_value = row["valor_iptu"] if "valor_iptu" in row_keys else row["iptu_anual"]
+    condominium_repass = (
+        row["repasse_taxa_condominio"]
+        if "repasse_taxa_condominio" in row_keys
+        else row["repasse_condominio"]
+    )
+    condominium_value = row["valor_condominio"]
     iptu = (
         Decimal("0.00")
         if row["repasse_iptu"]
-        else report_money(report_money(row["valor_iptu"]) / Decimal("12"))
+        else report_money(report_money(iptu_value) / Decimal("12"))
     )
     condominium = (
         Decimal("0.00")
-        if row["repasse_taxa_condominio"]
-        else report_money(row["valor_condominio"])
+        if condominium_repass
+        else report_money(condominium_value)
     )
     return iptu, condominium
+
+
+def property_financials(
+    gross_rent: Any,
+    row: sqlite3.Row,
+    *,
+    include_administration_fee: bool = True,
+) -> dict[str, Decimal]:
+    """Share the report's net-rent calculation with consolidated views."""
+
+    gross = report_money(gross_rent)
+    iptu, condominium = report_property_expenses(row)
+    administration_fee = (
+        report_money(row["taxa_adm_imovel"])
+        if include_administration_fee and row["imobiliaria"]
+        else Decimal("0.00")
+    )
+    return {
+        "aluguel_bruto": gross,
+        "iptu_descontado": iptu,
+        "condominio_descontado": condominium,
+        "taxa_administracao": administration_fee,
+        "aluguel_liquido": report_money(
+            gross - iptu - condominium - administration_fee
+        ),
+    }
+
+
+def escape_like_term(value: str) -> str:
+    """Escape user-controlled LIKE wildcards before binding a search term."""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def quick_search_response(
+    db: sqlite3.Connection, search_term: Any = ""
+) -> list[dict[str, Any]]:
+    """Return one searchable financial row for each property."""
+
+    term = str(search_term or "").strip().upper()
+    digits = re.sub(r"\D", "", term)
+    conditions: list[str] = []
+    params: list[str] = []
+    if term:
+        conditions.append("search_text LIKE ? ESCAPE '\\'")
+        params.append(f"%{escape_like_term(term)}%")
+    if digits:
+        conditions.append("search_digits LIKE ? ESCAPE '\\'")
+        params.append(f"%{escape_like_term(digits)}%")
+    search_clause = f"WHERE {' OR '.join(conditions)}" if conditions else ""
+
+    rows = db.execute(
+        f"""
+        WITH active_contract_periods AS (
+            SELECT c.id AS contrato_id,
+                   c.imovel_id,
+                   c.inquilino_id,
+                   cp.id AS periodo_id,
+                   cp.data_inicio AS periodo_data_inicio,
+                   cp.valor_aluguel AS contrato_valor_aluguel
+            FROM contratos AS c
+            JOIN contrato_periodos AS cp ON cp.contrato_id = c.id
+            WHERE c.status = 'ATIVO'
+        ),
+        current_active_contracts AS (
+            SELECT candidate.*
+            FROM active_contract_periods AS candidate
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM active_contract_periods AS newer
+                WHERE newer.imovel_id = candidate.imovel_id
+                  AND (
+                      newer.periodo_data_inicio > candidate.periodo_data_inicio
+                      OR (
+                          newer.periodo_data_inicio = candidate.periodo_data_inicio
+                          AND newer.periodo_id > candidate.periodo_id
+                      )
+                      OR (
+                          newer.periodo_data_inicio = candidate.periodo_data_inicio
+                          AND newer.periodo_id = candidate.periodo_id
+                          AND newer.contrato_id > candidate.contrato_id
+                      )
+                  )
+            )
+        ),
+        property_rows AS (
+            SELECT i.id AS imovel_id,
+                   i.apelido AS imovel,
+                   i.inscricao_mun AS id_municipal,
+                   i.cep,
+                   i.endereco,
+                   i.numero,
+                   i.cidade,
+                   i.estado,
+                   p.cpf AS cpf_responsavel,
+                   p.nome_completo AS responsavel_nome,
+                   i.aluguel AS aluguel_referencia,
+                   i.numero_energia,
+                   i.numero_agua,
+                   i.repasse_iptu,
+                   i.valor_iptu AS iptu_anual,
+                   i.repasse_taxa_condominio AS repasse_condominio,
+                   i.valor_condominio,
+                   i.adm_propriedade AS cobranca_solar,
+                   i.imobiliaria,
+                   i.taxa_adm_imovel,
+                   ac.contrato_id,
+                   ac.periodo_id,
+                   ac.contrato_valor_aluguel,
+                   CASE WHEN ac.contrato_id IS NULL THEN 0 ELSE 1 END
+                       AS contrato_ativo,
+                   tenant.nome_completo AS inquilino,
+                   tenant.cpf AS inquilino_cpf,
+                   solar.nome_completo AS cliente_energia_solar,
+                   solar.cpf AS cliente_energia_solar_cpf
+            FROM imoveis AS i
+            JOIN proprietario AS p ON p.id = i.responsavel
+            LEFT JOIN current_active_contracts AS ac
+                ON ac.imovel_id = i.id
+            LEFT JOIN inquilinos_clientes AS tenant
+                ON tenant.id = ac.inquilino_id
+            LEFT JOIN inquilinos_clientes AS solar
+                ON solar.id = i.cliente_energia_solar_id
+        ),
+        calculated_rows AS (
+            SELECT property_rows.*,
+                   COALESCE(contrato_valor_aluguel, aluguel_referencia)
+                       AS aluguel_bruto,
+                   CASE
+                       WHEN iptu_anual IS NULL THEN NULL
+                       ELSE ROUND(iptu_anual / 12.0, 2)
+                   END AS iptu_mensal,
+                   ROUND(
+                       COALESCE(contrato_valor_aluguel, aluguel_referencia)
+                       - CASE
+                           WHEN repasse_iptu = 1 THEN 0
+                           ELSE ROUND(COALESCE(iptu_anual, 0) / 12.0, 2)
+                         END
+                       - CASE
+                           WHEN repasse_condominio = 1 THEN 0
+                           ELSE COALESCE(valor_condominio, 0)
+                         END
+                       - CASE
+                           WHEN imobiliaria = 1 THEN COALESCE(taxa_adm_imovel, 0)
+                           ELSE 0
+                         END,
+                       2
+                    ) AS aluguel_liquido
+            FROM property_rows
+        ),
+        searchable_rows AS (
+            SELECT calculated_rows.*,
+                   UPPER(
+                       COALESCE(imovel, '') || ' ' ||
+                       COALESCE(CAST(imovel_id AS TEXT), '') || ' ' ||
+                       COALESCE(id_municipal, '') || ' ' ||
+                       COALESCE(cep, '') || ' ' ||
+                       COALESCE(endereco, '') || ' ' ||
+                       COALESCE(numero, '') || ' ' ||
+                       COALESCE(cidade, '') || ' ' ||
+                       COALESCE(estado, '') || ' ' ||
+                       COALESCE(cpf_responsavel, '') || ' ' ||
+                       COALESCE(responsavel_nome, '') || ' ' ||
+                       COALESCE(inquilino, '') || ' ' ||
+                       COALESCE(inquilino_cpf, '') || ' ' ||
+                       COALESCE(cliente_energia_solar, '') || ' ' ||
+                       COALESCE(cliente_energia_solar_cpf, '') || ' ' ||
+                       COALESCE(numero_energia, '') || ' ' ||
+                       COALESCE(numero_agua, '') || ' ' ||
+                       COALESCE(CAST(contrato_id AS TEXT), '') || ' ' ||
+                       COALESCE(CAST(periodo_id AS TEXT), '') || ' ' ||
+                       COALESCE(CAST(aluguel_bruto AS TEXT), '') || ' ' ||
+                       COALESCE(CAST(iptu_anual AS TEXT), '') || ' ' ||
+                       COALESCE(CAST(iptu_mensal AS TEXT), '') || ' ' ||
+                       COALESCE(CAST(valor_condominio AS TEXT), '') || ' ' ||
+                       COALESCE(CAST(aluguel_liquido AS TEXT), '') || ' ' ||
+                       CASE WHEN repasse_iptu = 1 THEN 'SIM' ELSE 'NAO' END || ' ' ||
+                       CASE WHEN repasse_condominio = 1 THEN 'SIM' ELSE 'NAO' END || ' ' ||
+                       CASE WHEN contrato_ativo = 1 THEN 'SIM' ELSE 'NAO' END || ' ' ||
+                       CASE WHEN cobranca_solar = 1 THEN 'SIM' ELSE 'NAO' END
+                   ) AS search_text,
+                   (
+                       COALESCE(CAST(imovel_id AS TEXT), '') ||
+                       COALESCE(id_municipal, '') ||
+                       COALESCE(cep, '') ||
+                       COALESCE(numero, '') ||
+                       COALESCE(cpf_responsavel, '') ||
+                       COALESCE(inquilino_cpf, '') ||
+                       COALESCE(cliente_energia_solar_cpf, '') ||
+                       COALESCE(numero_energia, '') ||
+                       COALESCE(numero_agua, '') ||
+                       COALESCE(CAST(contrato_id AS TEXT), '') ||
+                       COALESCE(CAST(periodo_id AS TEXT), '') ||
+                       CASE WHEN aluguel_bruto IS NULL THEN ''
+                            ELSE REPLACE(printf('%.2f', aluguel_bruto), '.', '') END ||
+                       CASE WHEN iptu_anual IS NULL THEN ''
+                            ELSE REPLACE(printf('%.2f', iptu_anual), '.', '') END ||
+                       CASE WHEN iptu_mensal IS NULL THEN ''
+                            ELSE REPLACE(printf('%.2f', iptu_mensal), '.', '') END ||
+                       CASE WHEN valor_condominio IS NULL THEN ''
+                            ELSE REPLACE(printf('%.2f', valor_condominio), '.', '') END ||
+                       CASE WHEN aluguel_liquido IS NULL THEN ''
+                            ELSE REPLACE(printf('%.2f', aluguel_liquido), '.', '') END
+                   ) AS search_digits
+            FROM calculated_rows
+        )
+        SELECT *
+        FROM searchable_rows
+        {search_clause}
+        ORDER BY imovel COLLATE NOCASE, imovel_id
+        """,
+        params,
+    ).fetchall()
+
+    result = []
+    for row in rows:
+        gross = row["contrato_valor_aluguel"]
+        if gross is None:
+            gross = row["aluguel_referencia"]
+        financials = property_financials(gross, row)
+        annual_iptu = (
+            None
+            if row["iptu_anual"] is None
+            else report_money(row["iptu_anual"])
+        )
+        monthly_iptu = (
+            None
+            if annual_iptu is None
+            else report_money(annual_iptu / Decimal("12"))
+        )
+        condominium = (
+            None
+            if row["valor_condominio"] is None
+            else report_money(row["valor_condominio"])
+        )
+        result.append(
+            {
+                "imovel_id": row["imovel_id"],
+                "imovel": row["imovel"],
+                "id_municipal": row["id_municipal"],
+                "responsavel_nome": row["responsavel_nome"],
+                "cep": row["cep"],
+                "endereco": row["endereco"],
+                "numero": row["numero"],
+                "cidade": row["cidade"],
+                "estado": row["estado"],
+                "cpf_responsavel": row["cpf_responsavel"],
+                "inquilino": row["inquilino"],
+                "cliente_energia_solar": row["cliente_energia_solar"],
+                "aluguel_bruto": report_number(financials["aluguel_bruto"]),
+                "aluguel_liquido": report_number(financials["aluguel_liquido"]),
+                "repasse_iptu": row["repasse_iptu"],
+                "iptu_anual": report_number(annual_iptu) if annual_iptu is not None else None,
+                "iptu_mensal": report_number(monthly_iptu) if monthly_iptu is not None else None,
+                "repasse_condominio": row["repasse_condominio"],
+                "valor_condominio": (
+                    report_number(condominium) if condominium is not None else None
+                ),
+                "contrato_ativo": row["contrato_ativo"],
+                "cobranca_solar": row["cobranca_solar"],
+                "numero_energia": row["numero_energia"],
+                "numero_agua": row["numero_agua"],
+            }
+        )
+    return result
 
 
 def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
@@ -2376,14 +2655,11 @@ def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
     total_net = Decimal("0.00")
 
     for row in rows:
-        gross = report_money(row["valor_aluguel"])
-        iptu, condominium = report_property_expenses(row)
-        administration_fee = (
-            report_money(row["taxa_adm_imovel"])
-            if row["imobiliaria"]
-            else Decimal("0.00")
-        )
-        net = report_money(gross - iptu - condominium - administration_fee)
+        financials = property_financials(row["valor_aluguel"], row)
+        gross = financials["aluguel_bruto"]
+        iptu = financials["iptu_descontado"]
+        condominium = financials["condominio_descontado"]
+        net = financials["aluguel_liquido"]
         margin = report_percentage(net, gross)
 
         lines.append(
@@ -2409,9 +2685,13 @@ def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
         total_net += net
 
     for row in vacant_rows:
-        iptu, condominium = report_property_expenses(row)
-        gross = Decimal("0.00")
-        net = report_money(gross - iptu - condominium)
+        financials = property_financials(
+            Decimal("0.00"), row, include_administration_fee=False
+        )
+        gross = financials["aluguel_bruto"]
+        iptu = financials["iptu_descontado"]
+        condominium = financials["condominio_descontado"]
+        net = financials["aluguel_liquido"]
 
         lines.append(
             {
@@ -2526,6 +2806,11 @@ def register_routes(app: Flask) -> None:
             return jsonify(financial_report_response(db))
         except ValueError as error:
             return error_response(str(error))
+
+    @app.get("/api/busca-rapida")
+    def quick_search():
+        db = get_db()
+        return jsonify(quick_search_response(db, request.args.get("q", "")))
 
     @app.route("/api/proprietarios", methods=["GET", "POST"])
     def proprietarios_collection():

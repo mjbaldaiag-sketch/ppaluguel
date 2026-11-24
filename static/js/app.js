@@ -2,6 +2,37 @@
     "use strict";
 
     const moduleConfig = {
+        busca_rapida: {
+            endpoint: "/api/busca-rapida",
+            title: "Busca rápida",
+            singular: "imóvel",
+            description: "Consulte rapidamente os dados consolidados dos seus imóveis.",
+            empty: "Nenhum resultado encontrado.",
+            emptyDescription: "Digite outro termo para consultar os imóveis cadastrados.",
+            quickSearch: true,
+            readOnly: true,
+            columns: [
+                { key: "imovel", label: "Imóvel", type: "text", value: (record) => record.imovel },
+                { key: "id_municipal", label: "ID. municipal", type: "text", value: (record) => record.id_municipal },
+                { key: "cpf_responsavel", label: "CPF responsável", type: "digits", value: (record) => record.cpf_responsavel },
+                { key: "responsavel_nome", label: "Nome responsável", type: "text", value: (record) => record.responsavel_nome },
+                { key: "cep", label: "CEP", type: "digits", value: (record) => record.cep },
+                { key: "endereco", label: "Endereço", type: "text", value: (record) => propertyAddress(record) },
+                { key: "inquilino", label: "Inquilino", type: "text", value: (record) => record.inquilino },
+                { key: "cliente_energia_solar", label: "Cliente energia solar", type: "text", value: (record) => record.cliente_energia_solar },
+                { key: "aluguel_bruto", label: "Aluguel bruto", type: "number", value: (record) => record.aluguel_bruto },
+                { key: "aluguel_liquido", label: "Aluguel líquido", type: "number", value: (record) => record.aluguel_liquido },
+                { key: "repasse_iptu", label: "Repasse IPTU", type: "boolean", value: (record) => record.repasse_iptu },
+                { key: "iptu_anual", label: "IPTU anual", type: "number", value: (record) => record.iptu_anual },
+                { key: "iptu_mensal", label: "IPTU mensal", type: "number", value: (record) => record.iptu_mensal },
+                { key: "repasse_condominio", label: "Repasse condomínio", type: "boolean", value: (record) => record.repasse_condominio },
+                { key: "valor_condominio", label: "Valor condomínio", type: "number", value: (record) => record.valor_condominio },
+                { key: "contrato_ativo", label: "Contrato ativo", type: "boolean", value: (record) => record.contrato_ativo },
+                { key: "cobranca_solar", label: "Cobrança solar", type: "boolean", value: (record) => record.cobranca_solar },
+                { key: "numero_energia", label: "Número de energia", type: "text", value: (record) => record.numero_energia },
+                { key: "numero_agua", label: "Número de água", type: "text", value: (record) => record.numero_agua },
+            ],
+        },
         proprietarios: {
             endpoint: "/api/proprietarios",
             title: "Proprietários",
@@ -45,7 +76,7 @@
                     key: "endereco",
                     label: "Endereço",
                     type: "text",
-                    value: (record) => [record.endereco, record.numero, record.cidade, record.estado].filter(Boolean).join(" "),
+                    value: (record) => propertyAddress(record),
                 },
                 { key: "aluguel", label: "Aluguel referência", type: "number", value: (record) => record.aluguel },
                 { key: "tipo_operacao", label: "Tipo operação", type: "text", value: (record) => record.tipo_operacao },
@@ -191,6 +222,9 @@
         clients: [],
         contractPeriods: [],
         reportSummary: {},
+        quickSearchTerm: "",
+        quickSearchTimer: null,
+        quickSearchController: null,
         periodMode: null,
         editingPeriodId: null,
         distributionRequestId: 0,
@@ -224,6 +258,8 @@
         elements.sidebarBackdrop = document.getElementById("sidebar-backdrop");
         elements.menuToggle = document.getElementById("menu-toggle");
         elements.navItems = document.querySelectorAll("[data-module]");
+        elements.mainContent = document.querySelector(".main-content");
+        elements.pageHeading = document.getElementById("page-heading");
         elements.breadcrumbModule = document.getElementById("breadcrumb-module");
         elements.moduleTitle = document.getElementById("module-title");
         elements.moduleTitleLabel = document.getElementById("module-title-label");
@@ -242,6 +278,13 @@
         elements.recordsHead = document.getElementById("records-head");
         elements.recordsBody = document.getElementById("records-body");
         elements.recordCount = document.getElementById("record-count");
+        elements.quickSearchPanel = document.getElementById("quick-search-panel");
+        elements.quickSearchInput = document.getElementById("quick-search-input");
+        elements.quickSearchHint = document.getElementById("quick-search-hint");
+        elements.quickSearchHead = document.getElementById("quick-search-head");
+        elements.quickSearchBody = document.getElementById("quick-search-body");
+        elements.quickSearchEmpty = document.getElementById("quick-search-empty");
+        elements.quickSearchLoading = document.getElementById("quick-search-loading");
         elements.globalSummary = document.getElementById("global-summary");
         elements.reportsPanel = document.getElementById("reports-panel");
         elements.reportsHead = document.getElementById("reports-head");
@@ -355,6 +398,8 @@
         elements.clearCepButtons.forEach((button) => button.addEventListener("click", clearCep));
         elements.recordsHead.addEventListener("click", handleSortHeaderClick);
         elements.recordsBody.addEventListener("click", handleTableAction);
+        elements.quickSearchInput.addEventListener("input", handleQuickSearchInput);
+        elements.quickSearchBody.addEventListener("click", handleQuickTableAction);
         elements.activeContractsHead.addEventListener("click", handleSortHeaderClick);
         elements.activeContractsBody.addEventListener("click", handleTableAction);
         elements.closedContractsHead.addEventListener("click", handleSortHeaderClick);
@@ -483,6 +528,16 @@
         }
     }
 
+    function handleQuickSearchInput() {
+        state.quickSearchTerm = elements.quickSearchInput.value;
+        if (state.quickSearchTimer) {
+            window.clearTimeout(state.quickSearchTimer);
+        }
+        state.quickSearchTimer = window.setTimeout(() => {
+            loadModule("busca_rapida");
+        }, 180);
+    }
+
     async function loadModule(moduleName) {
         const config = moduleConfig[moduleName];
         if (!config) {
@@ -490,9 +545,23 @@
         }
 
         const requestId = ++state.moduleRequestId;
+        if (state.quickSearchController) {
+            state.quickSearchController.abort();
+            state.quickSearchController = null;
+        }
+        let endpoint = withPropertyFilters(config.endpoint, moduleName);
+        const requestOptions = {};
+        let quickSearchController = null;
+        if (config.quickSearch) {
+            quickSearchController = new AbortController();
+            state.quickSearchController = quickSearchController;
+            const separator = endpoint.includes("?") ? "&" : "?";
+            endpoint = `${endpoint}${separator}q=${encodeURIComponent(state.quickSearchTerm.trim())}`;
+            requestOptions.signal = quickSearchController.signal;
+        }
         setLoading(true);
         try {
-            const response = await apiFetch(withPropertyFilters(config.endpoint, moduleName));
+            const response = await apiFetch(endpoint, requestOptions);
             if (requestId !== state.moduleRequestId || state.module !== moduleName) {
                 return;
             }
@@ -504,6 +573,9 @@
             }
             renderTable();
         } catch (error) {
+            if (error.name === "AbortError") {
+                return;
+            }
             if (requestId !== state.moduleRequestId || state.module !== moduleName) {
                 return;
             }
@@ -514,6 +586,9 @@
             renderTable();
             showToast(error.message, "error");
         } finally {
+            if (quickSearchController && state.quickSearchController === quickSearchController) {
+                state.quickSearchController = null;
+            }
             if (requestId === state.moduleRequestId) {
                 setLoading(false);
             }
@@ -521,7 +596,11 @@
     }
 
     async function refreshCurrentModule() {
-        await Promise.all([loadDashboard(), loadModule(state.module)]);
+        const tasks = [loadModule(state.module)];
+        if (state.module !== "busca_rapida") {
+            tasks.push(loadDashboard());
+        }
+        await Promise.all(tasks);
         if (state.module === "imoveis" || state.module === "energia_solar" || state.module === "relatorios") {
             await loadOwners();
         }
@@ -554,14 +633,26 @@
     function setTableMode() {
         const isContracts = state.module === "contratos";
         const isReports = state.module === "relatorios";
-        elements.recordsTableCard.hidden = isContracts || isReports;
+        const isQuickSearch = state.module === "busca_rapida";
+        elements.mainContent.classList.toggle("quick-search-mode", isQuickSearch);
+        elements.pageHeading.hidden = isQuickSearch;
+        elements.recordsTableCard.hidden = isContracts || isReports || isQuickSearch;
+        elements.quickSearchPanel.hidden = !isQuickSearch;
         elements.contractsTables.hidden = !isContracts;
         elements.reportsPanel.hidden = !isReports;
-        elements.globalSummary.hidden = isReports;
-        elements.newRecordButton.hidden = isReports;
+        elements.globalSummary.hidden = isReports || isQuickSearch;
+        elements.newRecordButton.hidden = isReports || isQuickSearch;
+        elements.refreshButton.hidden = isQuickSearch;
+        const ownerFilterContainer = elements.ownerFilter.closest(".global-filter");
+        if (ownerFilterContainer) {
+            ownerFilterContainer.hidden = isQuickSearch;
+        }
         const solarFilterContainer = elements.solarFilter.closest(".global-filter");
         if (solarFilterContainer) {
-            solarFilterContainer.hidden = isReports;
+            solarFilterContainer.hidden = isReports || isQuickSearch;
+        }
+        if (isQuickSearch) {
+            window.setTimeout(() => elements.quickSearchInput.focus(), 0);
         }
     }
 
@@ -573,10 +664,21 @@
     function uniqueRecordsById(records) {
         const seenIds = new Set();
         return records.filter((record) => {
-            if (!record || record.id === null || record.id === undefined) {
+            if (!record) {
                 return true;
             }
-            const recordId = String(record.id);
+            if (record.id !== null && record.id !== undefined) {
+                const recordId = String(record.id);
+                if (seenIds.has(recordId)) {
+                    return false;
+                }
+                seenIds.add(recordId);
+                return true;
+            }
+            if (record.imovel_id === null || record.imovel_id === undefined) {
+                return true;
+            }
+            const recordId = String(record.imovel_id);
             if (seenIds.has(recordId)) {
                 return false;
             }
@@ -606,10 +708,12 @@
 
     function setLoading(isLoading) {
         elements.loadingState.hidden = !isLoading;
+        elements.quickSearchLoading.hidden = !isLoading;
         elements.contractsLoadingState.hidden = !isLoading;
         elements.reportsLoadingState.hidden = !isLoading;
         if (isLoading) {
             elements.emptyState.hidden = true;
+            elements.quickSearchEmpty.hidden = true;
             elements.activeContractsEmpty.hidden = true;
             elements.closedContractsEmpty.hidden = true;
             elements.reportsEmpty.hidden = true;
@@ -620,6 +724,10 @@
         const config = moduleConfig[state.module];
         const sort = state.sortByModule[state.module] || null;
         updateModuleTitle(config.title, state.records.length);
+        if (config.quickSearch) {
+            renderQuickSearchTable(config);
+            return;
+        }
         if (config.report) {
             renderReportsTable(config, sort);
             return;
@@ -636,6 +744,122 @@
         elements.emptyTitle.textContent = config.empty;
         elements.emptyDescription.textContent = config.emptyDescription;
         elements.emptyState.hidden = state.records.length !== 0;
+    }
+
+    function quickSearchValue(value) {
+        return value === null || value === undefined || String(value).trim() === ""
+            ? "—"
+            : String(value);
+    }
+
+    function quickSearchBoolean(value) {
+        return value === true || Number(value) === 1 ? "SIM" : "NÃO";
+    }
+
+    function propertyAddress(record) {
+        return [record.endereco, record.numero, record.cidade, record.estado].filter(Boolean).join(" ");
+    }
+
+    function quickSearchDisplayValues(record) {
+        return [
+            quickSearchValue(record.imovel),
+            quickSearchValue(record.id_municipal),
+            formatCpf(record.cpf_responsavel) || "—",
+            quickSearchValue(record.responsavel_nome),
+            formatCep(record.cep) || "—",
+            quickSearchValue(propertyAddress(record)),
+            quickSearchValue(record.inquilino),
+            quickSearchValue(record.cliente_energia_solar),
+            formatCurrency(record.aluguel_bruto),
+            formatCurrency(record.aluguel_liquido),
+            quickSearchBoolean(record.repasse_iptu),
+            formatCurrency(record.iptu_anual),
+            formatCurrency(record.iptu_mensal),
+            quickSearchBoolean(record.repasse_condominio),
+            formatCurrency(record.valor_condominio),
+            quickSearchBoolean(record.contrato_ativo),
+            quickSearchBoolean(record.cobranca_solar),
+            quickSearchValue(record.numero_energia),
+            quickSearchValue(record.numero_agua),
+        ];
+    }
+
+    function quickSearchHasValue(record, column) {
+        const value = column.value ? column.value(record) : record[column.key];
+        return value !== null && value !== undefined && String(value).trim() !== "";
+    }
+
+    function quickSearchCopyButton(record, column) {
+        if (column.type === "boolean" || !quickSearchHasValue(record, column)) {
+            return "";
+        }
+        const propertyLabel = escapeHtml(column.label.toLowerCase());
+        const propertyName = escapeHtml(record.imovel || record.imovel_id);
+        return `<button class="quick-cell-copy-button" type="button" data-action="copy-quick-cell" data-id="${escapeHtml(record.imovel_id)}" data-field="${escapeHtml(column.key)}" aria-label="Copiar ${propertyLabel} do imóvel ${propertyName}" title="Copiar valor">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h10v11H9z"></path><path d="M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1 1h11a1 1 0 0 1 1 1v1"></path></svg>
+        </button>`;
+    }
+
+    function renderQuickSearchTable(config) {
+        elements.quickSearchHead.innerHTML = `<tr>${config.columns
+            .map((column) => `<th scope="col">${escapeHtml(column.label)}</th>`)
+            .join("")}</tr>`;
+        elements.quickSearchBody.innerHTML = state.records
+            .map((record) => {
+                const values = quickSearchDisplayValues(record);
+                return `<tr>${values.map((value, index) => {
+                    const column = config.columns[index];
+                    return `<td><span class="quick-cell-content">${escapeHtml(value)}${quickSearchCopyButton(record, column)}</span></td>`;
+                }).join("")}</tr>`;
+            })
+            .join("");
+        elements.recordCount.textContent = `${state.records.length} ${state.records.length === 1 ? "imóvel" : "imóveis"}`;
+        elements.quickSearchHint.textContent = state.quickSearchTerm.trim()
+            ? `Resultados para “${state.quickSearchTerm.trim()}”`
+            : "Busca instantânea em todos os campos";
+        elements.quickSearchEmpty.hidden = state.records.length !== 0;
+    }
+
+    async function handleQuickTableAction(event) {
+        const button = event.target.closest('[data-action="copy-quick-cell"]');
+        if (!button) {
+            return;
+        }
+        const record = state.records.find((item) => String(item.imovel_id) === String(button.dataset.id));
+        const config = moduleConfig.busca_rapida;
+        const column = config.columns.find((item) => item.key === button.dataset.field);
+        if (!record || !column || column.type === "boolean") {
+            return;
+        }
+        const columnIndex = config.columns.indexOf(column);
+        const text = quickSearchDisplayValues(record)[columnIndex];
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                copyTextWithFallback(text);
+            }
+            button.classList.add("is-copied");
+            window.setTimeout(() => button.classList.remove("is-copied"), 900);
+            showToast("Valor copiado");
+        } catch (error) {
+            showToast("Não foi possível copiar o valor.", "error");
+        }
+    }
+
+    function copyTextWithFallback(text) {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) {
+            throw new Error("Clipboard fallback failed");
+        }
     }
 
     function emptyReportSummary() {
