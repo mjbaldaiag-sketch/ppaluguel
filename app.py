@@ -2405,22 +2405,40 @@ def escape_like_term(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def quick_search_response(
-    db: sqlite3.Connection, search_term: Any = ""
-) -> list[dict[str, Any]]:
-    """Return one searchable financial row for each property."""
+def search_filter_clause(
+    search_term: Any, *, text_expression: str, digits_expression: str
+) -> tuple[str, tuple[str, ...]]:
+    """Build the shared accent-insensitive and numeric search predicate."""
 
     term = normalize_search_text(search_term)
     digits = re.sub(r"\D", "", term)
     conditions: list[str] = []
     params: list[str] = []
     if term:
-        conditions.append("normalize_search_text(search_text) LIKE ? ESCAPE '\\'")
+        conditions.append(
+            f"normalize_search_text({text_expression}) LIKE ? ESCAPE '\\'"
+        )
         params.append(f"%{escape_like_term(term)}%")
     if digits:
-        conditions.append("search_digits LIKE ? ESCAPE '\\'")
+        conditions.append(f"({digits_expression}) LIKE ? ESCAPE '\\'")
         params.append(f"%{escape_like_term(digits)}%")
-    search_clause = f"WHERE {' OR '.join(conditions)}" if conditions else ""
+    return (
+        f"({' OR '.join(conditions)})" if conditions else "",
+        tuple(params),
+    )
+
+
+def quick_search_response(
+    db: sqlite3.Connection, search_term: Any = ""
+) -> list[dict[str, Any]]:
+    """Return one searchable financial row for each property."""
+
+    search_predicate, params = search_filter_clause(
+        search_term,
+        text_expression="search_text",
+        digits_expression="search_digits",
+    )
+    search_clause = f"WHERE {search_predicate}" if search_predicate else ""
 
     rows = db.execute(
         f"""
@@ -2933,8 +2951,34 @@ def register_routes(app: Flask) -> None:
     def proprietarios_collection():
         db = get_db()
         if request.method == "GET":
+            search_predicate, query_params = search_filter_clause(
+                request.args.get("q", ""),
+                text_expression="""
+                    COALESCE(CAST(p.id AS TEXT), '') || ' ' ||
+                    COALESCE(p.nome_completo, '') || ' ' ||
+                    COALESCE(p.rg, '') || ' ' ||
+                    COALESCE(p.cpf, '') || ' ' ||
+                    COALESCE(p.contato, '') || ' ' ||
+                    COALESCE(p.profissao, '') || ' ' ||
+                    COALESCE(p.estado_civil, '') || ' ' ||
+                    COALESCE(p.email, '')
+                """,
+                digits_expression="""
+                    COALESCE(CAST(p.id AS TEXT), '') ||
+                    COALESCE(p.rg, '') ||
+                    COALESCE(p.cpf, '') ||
+                    COALESCE(p.contato, '')
+                """,
+            )
+            where_clause = f"WHERE {search_predicate}" if search_predicate else ""
             rows = db.execute(
-                "SELECT * FROM proprietario ORDER BY nome_completo COLLATE NOCASE"
+                f"""
+                SELECT p.*
+                FROM proprietario AS p
+                {where_clause}
+                ORDER BY p.nome_completo COLLATE NOCASE
+                """,
+                query_params,
             ).fetchall()
             return jsonify([row_dict(row) for row in rows])
 
@@ -3007,8 +3051,35 @@ def register_routes(app: Flask) -> None:
     def clients_collection():
         db = get_db()
         if request.method == "GET":
+            search_predicate, query_params = search_filter_clause(
+                request.args.get("q", ""),
+                text_expression="""
+                    COALESCE(CAST(ic.id AS TEXT), '') || ' ' ||
+                    COALESCE(ic.nome_completo, '') || ' ' ||
+                    COALESCE(ic.rg, '') || ' ' ||
+                    COALESCE(ic.cpf, '') || ' ' ||
+                    COALESCE(ic.contato, '') || ' ' ||
+                    COALESCE(ic.nome_contato, '') || ' ' ||
+                    COALESCE(ic.profissao, '') || ' ' ||
+                    COALESCE(ic.estado_civil, '') || ' ' ||
+                    COALESCE(ic.email, '')
+                """,
+                digits_expression="""
+                    COALESCE(CAST(ic.id AS TEXT), '') ||
+                    COALESCE(ic.rg, '') ||
+                    COALESCE(ic.cpf, '') ||
+                    COALESCE(ic.contato, '')
+                """,
+            )
+            where_clause = f"WHERE {search_predicate}" if search_predicate else ""
             rows = db.execute(
-                "SELECT * FROM inquilinos_clientes ORDER BY nome_completo COLLATE NOCASE"
+                f"""
+                SELECT ic.*
+                FROM inquilinos_clientes AS ic
+                {where_clause}
+                ORDER BY ic.nome_completo COLLATE NOCASE
+                """,
+                query_params,
             ).fetchall()
             return jsonify([row_dict(row) for row in rows])
 
@@ -3094,9 +3165,79 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         if request.method == "GET":
             try:
-                where_clause, query_params = property_filter_clause(db)
+                conditions, query_params = property_filter_conditions(db)
             except ValueError as error:
                 return error_response(str(error))
+            search_predicate, search_params = search_filter_clause(
+                request.args.get("q", ""),
+                text_expression="""
+                    COALESCE(CAST(i.id AS TEXT), '') || ' ' ||
+                    COALESCE(i.tipo_imovel, '') || ' ' ||
+                    COALESCE(i.apelido, '') || ' ' ||
+                    COALESCE(CAST(i.responsavel AS TEXT), '') || ' ' ||
+                    COALESCE(p.nome_completo, '') || ' ' ||
+                    COALESCE(p.cpf, '') || ' ' ||
+                    COALESCE(i.cep, '') || ' ' ||
+                    COALESCE(i.endereco, '') || ' ' ||
+                    COALESCE(i.estado, '') || ' ' ||
+                    COALESCE(i.cidade, '') || ' ' ||
+                    COALESCE(i.bairro, '') || ' ' ||
+                    COALESCE(i.numero, '') || ' ' ||
+                    COALESCE(i.complemento, '') || ' ' ||
+                    COALESCE(i.inscricao_mun, '') || ' ' ||
+                    COALESCE(CAST(i.aluguel AS TEXT), '') || ' ' ||
+                    COALESCE(i.numero_energia, '') || ' ' ||
+                    COALESCE(i.numero_agua, '') || ' ' ||
+                    CASE WHEN i.adm_propriedade = 1 THEN 'SIM' ELSE 'NAO' END || ' ' ||
+                    CASE WHEN i.imobiliaria = 1 THEN 'SIM' ELSE 'NAO' END || ' ' ||
+                    COALESCE(CAST(i.taxa_adm_imovel AS TEXT), '') || ' ' ||
+                    COALESCE(i.tipo_operacao, '') || ' ' ||
+                    COALESCE(CAST(link.unidade_geradora_id AS TEXT), '') || ' ' ||
+                    COALESCE(unit.inscricao_mun, '') || ' ' ||
+                    COALESCE(i.unidade_geradora_legada, '') || ' ' ||
+                    COALESCE(CAST(i.percentual_energia AS TEXT), '') || ' ' ||
+                    COALESCE(CAST(i.cliente_energia_solar_id AS TEXT), '') || ' ' ||
+                    COALESCE((
+                        SELECT solar.nome_completo
+                        FROM inquilinos_clientes AS solar
+                        WHERE solar.id = i.cliente_energia_solar_id
+                    ), '') || ' ' ||
+                    COALESCE((
+                        SELECT solar.cpf
+                        FROM inquilinos_clientes AS solar
+                        WHERE solar.id = i.cliente_energia_solar_id
+                    ), '') || ' ' ||
+                    CASE WHEN i.repasse_iptu = 1 THEN 'SIM' ELSE 'NAO' END || ' ' ||
+                    COALESCE(CAST(i.valor_iptu AS TEXT), '') || ' ' ||
+                    CASE WHEN i.repasse_taxa_condominio = 1 THEN 'SIM' ELSE 'NAO' END || ' ' ||
+                    COALESCE(CAST(i.valor_condominio AS TEXT), '')
+                """,
+                digits_expression="""
+                    COALESCE(CAST(i.id AS TEXT), '') ||
+                    COALESCE(CAST(i.responsavel AS TEXT), '') ||
+                    COALESCE(i.cep, '') ||
+                    COALESCE(i.numero, '') ||
+                    COALESCE(p.cpf, '') ||
+                    COALESCE(CAST(link.unidade_geradora_id AS TEXT), '') ||
+                    COALESCE(CAST(i.cliente_energia_solar_id AS TEXT), '') ||
+                    COALESCE(i.numero_energia, '') ||
+                    COALESCE(i.numero_agua, '') ||
+                    CASE WHEN i.aluguel IS NULL THEN ''
+                         ELSE REPLACE(printf('%.2f', i.aluguel), '.', '') END ||
+                    CASE WHEN i.taxa_adm_imovel IS NULL THEN ''
+                         ELSE REPLACE(printf('%.2f', i.taxa_adm_imovel), '.', '') END ||
+                    CASE WHEN i.percentual_energia IS NULL THEN ''
+                         ELSE REPLACE(printf('%.2f', i.percentual_energia), '.', '') END ||
+                    CASE WHEN i.valor_iptu IS NULL THEN ''
+                         ELSE REPLACE(printf('%.2f', i.valor_iptu), '.', '') END ||
+                    CASE WHEN i.valor_condominio IS NULL THEN ''
+                         ELSE REPLACE(printf('%.2f', i.valor_condominio), '.', '') END
+                """,
+            )
+            if search_predicate:
+                conditions.append(search_predicate)
+                query_params = (*query_params, *search_params)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             rows = db.execute(
                 f"""
                 SELECT i.id, i.apelido, i.tipo_imovel, i.responsavel, i.cep, i.endereco,
@@ -3232,6 +3373,45 @@ def register_routes(app: Flask) -> None:
                     % placeholders
                 )
                 query_params.extend(property_types)
+            search_predicate, search_params = search_filter_clause(
+                request.args.get("q", ""),
+                text_expression="""
+                    COALESCE(CAST(u.id AS TEXT), '') || ' ' ||
+                    COALESCE(CAST(u.responsavel AS TEXT), '') || ' ' ||
+                    COALESCE(p.nome_completo, '') || ' ' ||
+                    COALESCE(p.cpf, '') || ' ' ||
+                    COALESCE(u.cep, '') || ' ' ||
+                    COALESCE(u.endereco, '') || ' ' ||
+                    COALESCE(u.estado, '') || ' ' ||
+                    COALESCE(u.cidade, '') || ' ' ||
+                    COALESCE(u.bairro, '') || ' ' ||
+                    COALESCE(u.numero, '') || ' ' ||
+                    COALESCE(u.complemento, '') || ' ' ||
+                    COALESCE(u.inscricao_mun, '') || ' ' ||
+                    COALESCE(u.numero_instalacao, '') || ' ' ||
+                    COALESCE(u.numero_unidade_geradora_consumidora, '') || ' ' ||
+                    COALESCE(CAST(u.geracao_mensal_kwh AS TEXT), '') || ' ' ||
+                    COALESCE(CAST(u.preco_venda_kwh AS TEXT), '') || ' ' ||
+                    CASE WHEN u.preco_venda_kwh IS NULL THEN ''
+                         ELSE printf('%.4f', u.preco_venda_kwh / 10000.0) END
+                """,
+                digits_expression="""
+                    COALESCE(CAST(u.id AS TEXT), '') ||
+                    COALESCE(CAST(u.responsavel AS TEXT), '') ||
+                    COALESCE(p.cpf, '') ||
+                    COALESCE(u.cep, '') ||
+                    COALESCE(u.numero, '') ||
+                    COALESCE(u.numero_instalacao, '') ||
+                    COALESCE(u.numero_unidade_geradora_consumidora, '') ||
+                    COALESCE(CAST(u.geracao_mensal_kwh AS TEXT), '') ||
+                    COALESCE(CAST(u.preco_venda_kwh AS TEXT), '') ||
+                    CASE WHEN u.preco_venda_kwh IS NULL THEN ''
+                         ELSE REPLACE(printf('%.4f', u.preco_venda_kwh / 10000.0), '.', '') END
+                """,
+            )
+            if search_predicate:
+                conditions.append(search_predicate)
+                query_params.extend(search_params)
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             rows = db.execute(
                 f"""
@@ -3348,9 +3528,88 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         if request.method == "GET":
             try:
-                where_clause, query_params = property_filter_clause(db)
+                conditions, query_params = property_filter_conditions(db)
             except ValueError as error:
                 return error_response(str(error))
+            search_predicate, search_params = search_filter_clause(
+                request.args.get("q", ""),
+                text_expression="""
+                    COALESCE(CAST(c.id AS TEXT), '') || ' ' ||
+                    COALESCE(CAST(c.imovel_id AS TEXT), '') || ' ' ||
+                    COALESCE(CAST(c.inquilino_id AS TEXT), '') || ' ' ||
+                    COALESCE(c.data_inicio, '') || ' ' ||
+                    COALESCE(c.data_fim, '') || ' ' ||
+                    COALESCE(CAST(c.valor_aluguel AS TEXT), '') || ' ' ||
+                    COALESCE(CAST(c.valor_caucao AS TEXT), '') || ' ' ||
+                    COALESCE(CAST(c.desconto_pontualidade AS TEXT), '') || ' ' ||
+                    COALESCE(c.status, '') || ' ' ||
+                    COALESCE(i.apelido, '') || ' ' ||
+                    COALESCE(i.inscricao_mun, '') || ' ' ||
+                    COALESCE(i.endereco, '') || ' ' ||
+                    COALESCE(i.cidade, '') || ' ' ||
+                    COALESCE(p.nome_completo, '') || ' ' ||
+                    COALESCE(ic.nome_completo, '') || ' ' ||
+                    COALESCE(ic.cpf, '') || ' ' ||
+                    COALESCE(ic.contato, '') || ' ' ||
+                    COALESCE((
+                        SELECT CAST(cp.dia_pagamento AS TEXT)
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                        ORDER BY cp.data_inicio DESC, cp.id DESC
+                        LIMIT 1
+                    ), '') || ' ' ||
+                    COALESCE((
+                        SELECT cp.data_pagamento_caucao
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                        ORDER BY cp.data_inicio DESC, cp.id DESC
+                        LIMIT 1
+                    ), '') || ' ' ||
+                    COALESCE((
+                        SELECT CAST(cp.id AS TEXT)
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                        ORDER BY cp.data_inicio DESC, cp.id DESC
+                        LIMIT 1
+                    ), '') || ' ' ||
+                    COALESCE((
+                        SELECT CAST(COUNT(*) AS TEXT)
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                    ), '')
+                """,
+                digits_expression="""
+                    COALESCE(CAST(c.id AS TEXT), '') ||
+                    COALESCE(CAST(c.imovel_id AS TEXT), '') ||
+                    COALESCE(CAST(c.inquilino_id AS TEXT), '') ||
+                    COALESCE(ic.cpf, '') ||
+                    COALESCE(ic.contato, '') ||
+                    CASE WHEN c.valor_aluguel IS NULL THEN ''
+                         ELSE REPLACE(printf('%.2f', c.valor_aluguel), '.', '') END ||
+                    CASE WHEN c.valor_caucao IS NULL THEN ''
+                         ELSE REPLACE(printf('%.2f', c.valor_caucao), '.', '') END ||
+                    CASE WHEN c.desconto_pontualidade IS NULL THEN ''
+                         ELSE REPLACE(printf('%.2f', c.desconto_pontualidade), '.', '') END ||
+                    COALESCE((
+                        SELECT CAST(cp.dia_pagamento AS TEXT)
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                        ORDER BY cp.data_inicio DESC, cp.id DESC
+                        LIMIT 1
+                    ), '') ||
+                    COALESCE((
+                        SELECT CAST(cp.id AS TEXT)
+                        FROM contrato_periodos AS cp
+                        WHERE cp.contrato_id = c.id
+                        ORDER BY cp.data_inicio DESC, cp.id DESC
+                        LIMIT 1
+                    ), '')
+                """,
+            )
+            if search_predicate:
+                conditions.append(search_predicate)
+                query_params = (*query_params, *search_params)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             rows = db.execute(
                 f"""
                 SELECT c.*,
@@ -3376,6 +3635,7 @@ def register_routes(app: Flask) -> None:
                        ic.nome_completo AS inquilino_nome
                 FROM contratos AS c
                 JOIN imoveis AS i ON i.id = c.imovel_id
+                JOIN proprietario AS p ON p.id = i.responsavel
                 JOIN inquilinos_clientes AS ic ON ic.id = c.inquilino_id
                 {where_clause}
                 ORDER BY c.data_inicio DESC, c.id DESC

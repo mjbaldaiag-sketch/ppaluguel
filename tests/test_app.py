@@ -1711,6 +1711,216 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertNotIn("quick-copy-column", styles)
         self.assertNotIn("quick-copy-button", styles)
 
+    def test_module_search_filters_clients_properties_contracts_and_solar_units(self):
+        owner_payload = self.person_payload("Proprietário Busca Módulos")
+        owner_payload["cpf"] = "123.456.789-09"
+        owner = self.post_json("/api/proprietarios", owner_payload).get_json()
+        owner_search = self.client.get(
+            "/api/proprietarios", query_string={"q": "proprietario busca"}
+        )
+        self.assertEqual(
+            [row["id"] for row in owner_search.get_json()], [owner["id"]]
+        )
+        numeric_owner_search = self.client.get(
+            "/api/proprietarios", query_string={"q": "123.456.789-09"}
+        )
+        self.assertEqual(
+            [row["id"] for row in numeric_owner_search.get_json()], [owner["id"]]
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/proprietarios", query_string={"q": "Proprietário%"}
+            ).get_json(),
+            [],
+        )
+        other_owner = self.post_json(
+            "/api/proprietarios",
+            dict(self.person_payload("Outro Proprietário"), cpf=""),
+        ).get_json()
+        self.assertEqual(
+            {
+                row["id"]
+                for row in self.client.get(
+                    "/api/proprietarios", query_string={"q": ""}
+                ).get_json()
+            },
+            {owner["id"], other_owner["id"]},
+        )
+
+        client_payload = self.person_payload("Ágata Cliente Módulos")
+        client_payload["cpf"] = "123.456.789-09"
+        client_payload["email"] = "AGATA@EXAMPLE.COM"
+        client = self.post_json(
+            "/api/inquilinos-clientes", client_payload
+        ).get_json()
+        other_client_payload = self.person_payload("Outro Cliente")
+        other_client_payload["cpf"] = ""
+        other_client = self.post_json(
+            "/api/inquilinos-clientes", other_client_payload
+        ).get_json()
+
+        client_search = self.client.get(
+            "/api/inquilinos-clientes", query_string={"q": "agata"}
+        )
+        self.assertEqual(
+            [row["id"] for row in client_search.get_json()], [client["id"]]
+        )
+        numeric_client_search = self.client.get(
+            "/api/inquilinos-clientes", query_string={"q": "123.456.789-09"}
+        )
+        self.assertEqual(
+            [row["id"] for row in numeric_client_search.get_json()], [client["id"]]
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/inquilinos-clientes", query_string={"q": "Agata%"}
+            ).get_json(),
+            [],
+        )
+
+        property_payload = self.property_payload(owner["id"])
+        property_payload.update(
+            {
+                "apelido": "Casa Busca Módulos",
+                "inscricao_mun": "IMV-777",
+                "cliente_energia_solar_id": str(client["id"]),
+                "numero_energia": "ENERGIA-777",
+            }
+        )
+        property_data = self.post_json("/api/imoveis", property_payload).get_json()
+        other_property = self.post_json(
+            "/api/imoveis",
+            dict(self.property_payload(other_owner["id"]), apelido="Casa de Outro Proprietário"),
+        ).get_json()
+
+        property_search = self.client.get(
+            "/api/imoveis",
+            query_string=[
+                ("q", "agata"),
+                ("proprietario_id", str(owner["id"])),
+            ],
+        )
+        self.assertEqual(
+            [row["id"] for row in property_search.get_json()], [property_data["id"]]
+        )
+        numeric_property_search = self.client.get(
+            "/api/imoveis", query_string={"q": "IMV-777"}
+        )
+        self.assertEqual(
+            [row["id"] for row in numeric_property_search.get_json()],
+            [property_data["id"]],
+        )
+        self.assertNotIn(
+            property_data["id"],
+            {
+                row["id"]
+                for row in self.client.get(
+                    "/api/imoveis", query_string={"q": "Outro Proprietário"}
+                ).get_json()
+            },
+        )
+
+        contract_payload = self.contract_payload(property_data["id"], client["id"])
+        contract_payload["valor_aluguel"] = "R$ 2.500,00"
+        contract = self.post_json("/api/contratos", contract_payload).get_json()
+        contract_search = self.client.get(
+            "/api/contratos", query_string={"q": "2.500,00"}
+        )
+        self.assertEqual(
+            [row["id"] for row in contract_search.get_json()], [contract["id"]]
+        )
+        self.assertEqual(
+            [row["id"] for row in self.client.get(
+                "/api/contratos", query_string={"q": "ÁGATA"}
+            ).get_json()],
+            [contract["id"]],
+        )
+        filtered_contracts = self.client.get(
+            "/api/contratos",
+            query_string={
+                "q": "Casa Busca",
+                "proprietario_id": str(owner["id"]),
+            },
+        )
+        self.assertEqual(
+            [row["id"] for row in filtered_contracts.get_json()], [contract["id"]]
+        )
+        self.assertIn(
+            contract["id"],
+            {row["id"] for row in self.client.get("/api/contratos").get_json()},
+        )
+
+        generation_payload = self.generation_unit_payload(owner["id"], generation="1500")
+        generation_payload.update(
+            {
+                "inscricao_mun": "UG Busca Módulos",
+                "numero_instalacao": "INST-777",
+                "numero_unidade_geradora_consumidora": "UGC-777",
+                "preco_venda_kwh": "0,25",
+            }
+        )
+        unit = self.post_json(
+            "/api/unidades-geracao", generation_payload
+        ).get_json()
+        unit_search = self.client.get(
+            "/api/unidades-geracao", query_string={"q": "inst-777"}
+        )
+        self.assertEqual(
+            [row["id"] for row in unit_search.get_json()], [unit["id"]]
+        )
+        numeric_unit_search = self.client.get(
+            "/api/unidades-geracao", query_string={"q": "0,25"}
+        )
+        self.assertEqual(
+            [row["id"] for row in numeric_unit_search.get_json()], [unit["id"]]
+        )
+        filtered_units = self.client.get(
+            "/api/unidades-geracao",
+            query_string=[
+                ("q", "UG Busca"),
+                ("proprietario_id", str(owner["id"])),
+            ],
+        )
+        self.assertEqual(
+            [row["id"] for row in filtered_units.get_json()], [unit["id"]]
+        )
+        self.assertIn(
+            unit["id"],
+            {row["id"] for row in self.client.get("/api/unidades-geracao").get_json()},
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/unidades-geracao", query_string={"q": "nao-existe"}
+            ).get_json(),
+            [],
+        )
+        self.assertEqual(
+            {row["id"] for row in self.client.get("/api/inquilinos-clientes").get_json()},
+            {client["id"], other_client["id"]},
+        )
+        self.assertEqual(
+            {row["id"] for row in self.client.get("/api/imoveis").get_json()},
+            {property_data["id"], other_property["id"]},
+        )
+
+    def test_module_search_frontend_hooks(self):
+        page = self.client.get("/").get_data(as_text=True)
+        source = Path("static/js/app.js").read_text(encoding="utf-8")
+        styles = Path("static/css/style.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="module-search-field"', page)
+        self.assertIn('id="module-search-input"', page)
+        self.assertIn('class="page-actions"', page)
+        self.assertGreaterEqual(source.count("search: true"), 5)
+        self.assertIn('endpoint: "/api/proprietarios"', source)
+        self.assertIn("handleModuleSearchInput", source)
+        self.assertIn("moduleSearchTerm", source)
+        self.assertIn("searchController", source)
+        self.assertIn("moduleSearchInput.placeholder", source)
+        self.assertIn("setTimeout(() => {\n            loadModule(state.module);\n        }, 180)", source)
+        self.assertIn("module-search-field", styles)
+        self.assertIn("#module-search-field[hidden]", styles)
+
     def test_contract_period_history_renewal_edit_and_revert(self):
         owner = self.post_json(
             "/api/proprietarios", self.person_payload("Proprietário dos Períodos")

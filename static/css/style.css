@@ -461,6 +461,8 @@ h3 {
     display: flex;
     align-items: center;
     justify-content: flex-start;
+    gap: 12px;
+    flex-wrap: wrap;
     width: 100%;
     margin: 18px auto 0;
 }
@@ -468,6 +470,16 @@ h3 {
 .page-actions .primary-button {
     max-width: 100%;
     white-space: nowrap;
+}
+
+.quick-search-field.module-search-field {
+    width: min(390px, 100%);
+    min-height: 36px;
+    box-shadow: 0 5px 16px rgba(37, 52, 85, .035);
+}
+
+#module-search-field[hidden] {
+    display: none;
 }
 
 .summary-card {
@@ -2370,6 +2382,11 @@ h3 {
 
     .module-section {
         margin-top: 24px;
+    }
+
+    .quick-search-field.module-search-field {
+        flex: 1 1 100%;
+        width: 100%;
     }
 
     .quick-search-mode .page-content {

@@ -38,6 +38,8 @@
             title: "Proprietários",
             singular: "proprietário",
             description: "",
+            search: true,
+            searchPlaceholder: "Buscar nome, CPF, contato ou e-mail...",
             empty: "Ainda não há proprietários cadastrados.",
             emptyDescription: "Cadastre o primeiro proprietário para começar a relacionar seus imóveis.",
             columns: [
@@ -52,6 +54,8 @@
             title: "Inquilinos / Clientes",
             singular: "inquilino/cliente",
             description: "",
+            search: true,
+            searchPlaceholder: "Buscar nome, CPF, contato ou e-mail...",
             empty: "Ainda não há inquilinos ou clientes cadastrados.",
             emptyDescription: "Cadastre seu primeiro inquilino ou cliente para manter os contatos organizados.",
             columns: [
@@ -66,6 +70,8 @@
             title: "Imóveis",
             singular: "imóvel",
             description: "",
+            search: true,
+            searchPlaceholder: "Buscar imóvel, endereço, proprietário ou identificador...",
             empty: "Ainda não há imóveis cadastrados.",
             emptyDescription: "Cadastre um proprietário primeiro e depois adicione o seu primeiro imóvel.",
             columns: [
@@ -90,6 +96,8 @@
             viewLabel: "Detalhes da unidade de geração",
             feminine: true,
             description: "",
+            search: true,
+            searchPlaceholder: "Buscar unidade, proprietário, instalação ou endereço...",
             empty: "Ainda não há unidades de geração cadastradas.",
             emptyDescription: "Cadastre a primeira unidade de geração para começar.",
             columns: [
@@ -115,6 +123,8 @@
             title: "Contratos",
             singular: "contrato",
             description: "",
+            search: true,
+            searchPlaceholder: "Buscar imóvel, inquilino, contrato, data ou valor...",
             empty: "Ainda não há contratos cadastrados.",
             emptyDescription: "Cadastre o primeiro contrato relacionando um imóvel e um inquilino/cliente.",
             columns: [
@@ -245,7 +255,9 @@
         reportPeriod: "month",
         quickSearchTerm: "",
         quickSearchTimer: null,
-        quickSearchController: null,
+        moduleSearchTerm: "",
+        moduleSearchTimer: null,
+        searchController: null,
         periodMode: null,
         editingPeriodId: null,
         distributionRequestId: 0,
@@ -281,6 +293,8 @@
         elements.navItems = document.querySelectorAll("[data-module]");
         elements.mainContent = document.querySelector(".main-content");
         elements.pageActions = document.getElementById("page-actions");
+        elements.moduleSearchField = document.getElementById("module-search-field");
+        elements.moduleSearchInput = document.getElementById("module-search-input");
         elements.breadcrumbModule = document.getElementById("breadcrumb-module");
         elements.moduleTitle = document.getElementById("module-title");
         elements.moduleTitleLabel = document.getElementById("module-title-label");
@@ -432,6 +446,7 @@
         elements.recordsHead.addEventListener("click", handleSortHeaderClick);
         elements.recordsBody.addEventListener("click", handleTableAction);
         elements.quickSearchInput.addEventListener("input", handleQuickSearchInput);
+        elements.moduleSearchInput.addEventListener("input", handleModuleSearchInput);
         elements.quickSearchBody.addEventListener("click", handleQuickTableAction);
         elements.activeContractsHead.addEventListener("click", handleSortHeaderClick);
         elements.activeContractsBody.addEventListener("click", handleTableAction);
@@ -797,6 +812,16 @@
         }, 180);
     }
 
+    function handleModuleSearchInput() {
+        state.moduleSearchTerm = elements.moduleSearchInput.value;
+        if (state.moduleSearchTimer) {
+            window.clearTimeout(state.moduleSearchTimer);
+        }
+        state.moduleSearchTimer = window.setTimeout(() => {
+            loadModule(state.module);
+        }, 180);
+    }
+
     function handleReportPeriodChange(event) {
         const option = event.target.closest("[data-report-period]");
         if (!option || !elements.reportPeriodToggle.contains(option)) {
@@ -822,19 +847,20 @@
         }
 
         const requestId = ++state.moduleRequestId;
-        if (state.quickSearchController) {
-            state.quickSearchController.abort();
-            state.quickSearchController = null;
+        if (state.searchController) {
+            state.searchController.abort();
+            state.searchController = null;
         }
         let endpoint = withPropertyFilters(config.endpoint, moduleName);
         const requestOptions = {};
-        let quickSearchController = null;
-        if (config.quickSearch) {
-            quickSearchController = new AbortController();
-            state.quickSearchController = quickSearchController;
+        let searchController = null;
+        if (config.quickSearch || config.search) {
+            searchController = new AbortController();
+            state.searchController = searchController;
             const separator = endpoint.includes("?") ? "&" : "?";
-            endpoint = `${endpoint}${separator}q=${encodeURIComponent(state.quickSearchTerm.trim())}`;
-            requestOptions.signal = quickSearchController.signal;
+            const searchTerm = config.quickSearch ? state.quickSearchTerm : state.moduleSearchTerm;
+            endpoint = `${endpoint}${separator}q=${encodeURIComponent(searchTerm.trim())}`;
+            requestOptions.signal = searchController.signal;
         }
         setLoading(true);
         try {
@@ -863,8 +889,8 @@
             renderTable();
             showToast(error.message, "error");
         } finally {
-            if (quickSearchController && state.quickSearchController === quickSearchController) {
-                state.quickSearchController = null;
+            if (searchController && state.searchController === searchController) {
+                state.searchController = null;
             }
             if (requestId === state.moduleRequestId) {
                 setLoading(false);
@@ -894,6 +920,14 @@
             loadModule(moduleName);
             return;
         }
+        if (state.moduleSearchTimer) {
+            window.clearTimeout(state.moduleSearchTimer);
+            state.moduleSearchTimer = null;
+        }
+        state.moduleSearchTerm = "";
+        if (elements.moduleSearchInput) {
+            elements.moduleSearchInput.value = "";
+        }
         state.module = moduleName;
         const config = moduleConfig[moduleName];
         elements.newRecordButton.dataset.module = moduleName;
@@ -912,6 +946,7 @@
         const isContracts = state.module === "contratos";
         const isReports = state.module === "relatorios";
         const isQuickSearch = state.module === "busca_rapida";
+        const config = moduleConfig[state.module];
         elements.mainContent.classList.toggle("quick-search-mode", isQuickSearch);
         elements.recordsTableCard.hidden = isContracts || isReports || isQuickSearch;
         elements.quickSearchPanel.hidden = !isQuickSearch;
@@ -921,6 +956,9 @@
         elements.globalSummary.hidden = isReports || isQuickSearch;
         elements.topbarSummary.hidden = isReports || isQuickSearch;
         elements.pageActions.hidden = isReports || isQuickSearch;
+        elements.moduleSearchField.hidden = !config.search;
+        elements.moduleSearchInput.placeholder = config.searchPlaceholder || "Buscar...";
+        elements.moduleSearchInput.setAttribute("aria-label", `Buscar em ${config.title}`);
         elements.refreshButton.hidden = isQuickSearch;
         const ownerFilterContainer = elements.ownerFilter.closest(".global-filter");
         if (ownerFilterContainer) {
@@ -1036,8 +1074,13 @@
             .map((record) => renderRow(record, sort))
             .join("");
         elements.recordCount.textContent = `${state.records.length} ${state.records.length === 1 ? "registro" : "registros"}`;
-        elements.emptyTitle.textContent = config.empty;
-        elements.emptyDescription.textContent = config.emptyDescription;
+        const hasSearchTerm = config.search && state.moduleSearchTerm.trim();
+        elements.emptyTitle.textContent = hasSearchTerm
+            ? "Nenhum resultado encontrado"
+            : config.empty;
+        elements.emptyDescription.textContent = hasSearchTerm
+            ? "Tente outro termo para consultar os cadastros."
+            : config.emptyDescription;
         elements.emptyState.hidden = state.records.length !== 0;
     }
 
@@ -1342,6 +1385,17 @@
             .map((record) => renderRow(record, sort))
             .join("");
         recordCount.textContent = `${records.length} ${records.length === 1 ? "registro" : "registros"}`;
+        if (state.moduleSearchTerm.trim()) {
+            emptyState.querySelector("h3").textContent = "Nenhum resultado encontrado";
+            emptyState.querySelector("p").textContent = "Tente outro termo para consultar os contratos.";
+        } else {
+            emptyState.querySelector("h3").textContent = emptyState.id === "active-contracts-empty"
+                ? "Nenhum contrato ativo"
+                : "Nenhum contrato encerrado";
+            emptyState.querySelector("p").textContent = emptyState.id === "active-contracts-empty"
+                ? "Cadastre um contrato ativo para começar."
+                : "Contratos encerrados aparecerão nesta tabela.";
+        }
         emptyState.hidden = records.length !== 0;
     }
 
