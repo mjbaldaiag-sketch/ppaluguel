@@ -132,6 +132,10 @@ class AppCrudTestCase(unittest.TestCase):
             row[1]: row[2]
             for row in connection.execute("PRAGMA table_info(unidades_geracao)").fetchall()
         }
+        contract_schema = {
+            row[1]: (row[2], row[4])
+            for row in connection.execute("PRAGMA table_info(contratos)").fetchall()
+        }
         connection.close()
         self.assertIn("tipo_operacao", property_columns)
         self.assertNotIn("energia_solar", property_columns)
@@ -144,6 +148,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(property_schema["valor_condominio"], ("REAL", None))
         self.assertEqual(property_schema["taxa_adm_imovel"], ("REAL", None))
         self.assertEqual(generation_schema["preco_venda_kwh"], "INTEGER")
+        self.assertEqual(contract_schema["desconto_pontualidade"], ("REAL", "0"))
 
     def test_proprietario_crud_and_normalization(self):
         created = self.post_json("/api/proprietarios", self.person_payload())
@@ -1032,6 +1037,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(contract["inquilino_id"], tenant["id"])
         self.assertEqual(contract["data_inicio"], "2026-01-01")
         self.assertEqual(contract["valor_aluguel"], 2500.0)
+        self.assertEqual(contract["desconto_pontualidade"], 0.0)
         self.assertEqual(contract["dia_pagamento"], 5)
         self.assertEqual(contract["valor_caucao"], 5000.0)
         self.assertEqual(contract["status"], "ATIVO")
@@ -1051,11 +1057,18 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(blocked_tenant.status_code, 409)
 
         changed = self.contract_payload(property_data["id"], tenant["id"])
-        changed.update({"data_fim": "2028-01-01", "valor_caucao": ""})
+        changed.update(
+            {
+                "data_fim": "2028-01-01",
+                "valor_caucao": "",
+                "desconto_pontualidade": "R$ 125,40",
+            }
+        )
         updated = self.put_json(f"/api/contratos/{contract_id}", changed)
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.get_json()["data_fim"], "2028-01-01")
         self.assertIsNone(updated.get_json()["valor_caucao"])
+        self.assertEqual(updated.get_json()["desconto_pontualidade"], 125.4)
 
         self.assertEqual(self.client.delete(f"/api/contratos/{contract_id}").status_code, 204)
         self.assertEqual(self.client.delete(f"/api/imoveis/{property_data['id']}").status_code, 204)
@@ -1128,6 +1141,90 @@ class AppCrudTestCase(unittest.TestCase):
             f"/api/contratos/{contract['id']}", dict(payload, status="PAUSADO")
         )
         self.assertEqual(invalid_update.status_code, 400)
+
+    def test_contract_punctuality_discount_crud_validation_and_report(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Desconto")
+        ).get_json()
+        property_data = self.post_json(
+            "/api/imoveis", self.property_payload(owner["id"])
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Desconto")
+        ).get_json()
+
+        payload = self.contract_payload(property_data["id"], tenant["id"])
+        payload.update(
+            {
+                "valor_aluguel": "R$ 1.000,00",
+                "desconto_pontualidade": "R$ 75,50",
+            }
+        )
+        created = self.post_json("/api/contratos", payload)
+        self.assertEqual(created.status_code, 201)
+        contract = created.get_json()
+        self.assertEqual(contract["desconto_pontualidade"], 75.5)
+
+        renewal = self.post_json(
+            f"/api/contratos/{contract['id']}/periodos",
+            {
+                "data_inicio": "2027-01-02",
+                "data_fim": "2028-01-01",
+                "valor_aluguel": "R$ 1.200,00",
+                "dia_pagamento": "10",
+            },
+        )
+        self.assertEqual(renewal.status_code, 201)
+
+        report = self.client.get("/api/relatorios").get_json()
+        row = next(item for item in report["linhas"] if item["contrato_id"] == contract["id"])
+        self.assertEqual(row["aluguel_bruto"], 1200.0)
+        self.assertEqual(row["aluguel_liquido"], 1124.5)
+        self.assertEqual(row["margem_liquida_percentual"], 93.71)
+        self.assertEqual(report["resumo"]["total_aluguel_liquido"], 1124.5)
+
+        current_payload = dict(
+            payload,
+            data_inicio="2027-01-02",
+            data_fim="2028-01-01",
+            valor_aluguel="R$ 1.200,00",
+            dia_pagamento="10",
+        )
+        updated = self.put_json(
+            f"/api/contratos/{contract['id']}",
+            dict(current_payload, desconto_pontualidade="R$ 25,25"),
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["desconto_pontualidade"], 25.25)
+        updated_report = self.client.get("/api/relatorios").get_json()
+        updated_row = next(
+            item for item in updated_report["linhas"] if item["contrato_id"] == contract["id"]
+        )
+        self.assertEqual(updated_row["aluguel_liquido"], 1174.75)
+
+        blank_update = self.put_json(
+            f"/api/contratos/{contract['id']}",
+            dict(current_payload, desconto_pontualidade=""),
+        )
+        self.assertEqual(blank_update.status_code, 200)
+        self.assertEqual(blank_update.get_json()["desconto_pontualidade"], 0.0)
+
+        null_payload = dict(payload, imovel_id=property_data["id"], desconto_pontualidade=None)
+        null_contract = self.post_json("/api/contratos", null_payload)
+        self.assertEqual(null_contract.status_code, 201)
+        self.assertEqual(null_contract.get_json()["desconto_pontualidade"], 0.0)
+
+        for invalid_discount in ("-1", "R$ 10,123"):
+            invalid = self.post_json(
+                "/api/contratos",
+                dict(
+                    payload,
+                    data_inicio="2030-01-01",
+                    data_fim="2031-01-01",
+                    desconto_pontualidade=invalid_discount,
+                ),
+            )
+            self.assertEqual(invalid.status_code, 400)
 
     def test_financial_report_calculates_rows_summary_and_owner_filter(self):
         owner_one = self.post_json(
@@ -1855,6 +1952,8 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('data-field="inquilino_id"', page)
         self.assertIn('data-field="status"', page)
         self.assertIn('data-field="dia_pagamento"', page)
+        self.assertIn('data-field="desconto_pontualidade" data-mask="currency"', page)
+        self.assertIn("Desconto pontualidade", page)
         self.assertIn('data-period-field="dia_pagamento"', page)
         self.assertIn("<span>Cobrança energia solar</span>", page)
         self.assertNotIn("<span>Administração da propriedade</span>", page)
@@ -2868,13 +2967,18 @@ class AppCrudTestCase(unittest.TestCase):
             row[1] for row in connection.execute("PRAGMA table_info(contratos)").fetchall()
         ]
         persisted = connection.execute(
-            "SELECT id, status FROM contratos"
+            "SELECT id, status, desconto_pontualidade FROM contratos"
         ).fetchall()
         connection.close()
 
         self.assertEqual(columns.count("status"), 1)
-        self.assertEqual(persisted, [(1, "ATIVO")])
+        self.assertEqual(columns.count("desconto_pontualidade"), 1)
+        self.assertEqual(persisted, [(1, "ATIVO", 0.0)])
         self.assertEqual(legacy_client.get("/api/contratos").get_json()[0]["status"], "ATIVO")
+        self.assertEqual(
+            legacy_client.get("/api/contratos").get_json()[0]["desconto_pontualidade"],
+            0.0,
+        )
 
         create_app({"TESTING": True, "DATABASE": str(database)})
         connection = sqlite3.connect(database)
@@ -2882,11 +2986,12 @@ class AppCrudTestCase(unittest.TestCase):
             row[1] for row in connection.execute("PRAGMA table_info(contratos)").fetchall()
         ]
         rows_after_retry = connection.execute(
-            "SELECT id, status FROM contratos"
+            "SELECT id, status, desconto_pontualidade FROM contratos"
         ).fetchall()
         connection.close()
         self.assertEqual(columns_after_retry.count("status"), 1)
-        self.assertEqual(rows_after_retry, [(1, "ATIVO")])
+        self.assertEqual(columns_after_retry.count("desconto_pontualidade"), 1)
+        self.assertEqual(rows_after_retry, [(1, "ATIVO", 0.0)])
 
     def test_existing_database_migrates_solar_client_fk_without_data_loss(self):
         database = Path(self.temp_dir.name) / "legacy-solar-client.db"

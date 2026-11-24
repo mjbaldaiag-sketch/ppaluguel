@@ -408,6 +408,10 @@ def migrate_database(db: sqlite3.Connection) -> None:
             data_fim TEXT NOT NULL,
             valor_aluguel REAL NOT NULL CHECK (valor_aluguel >= 0),
             valor_caucao REAL CHECK (valor_caucao IS NULL OR valor_caucao >= 0),
+            desconto_pontualidade REAL NOT NULL DEFAULT 0 CHECK (
+                desconto_pontualidade >= 0 AND
+                desconto_pontualidade = ROUND(desconto_pontualidade, 2)
+            ),
             status TEXT NOT NULL DEFAULT 'ATIVO' CHECK (
                 status IN ('ATIVO', 'ENCERRADO')
             ),
@@ -436,6 +440,19 @@ def migrate_database(db: sqlite3.Connection) -> None:
             END
             """
         )
+    contract_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(contratos)").fetchall()
+    }
+    if "desconto_pontualidade" not in contract_columns:
+        db.execute(
+            "ALTER TABLE contratos ADD COLUMN desconto_pontualidade REAL "
+            "NOT NULL DEFAULT 0 CHECK (desconto_pontualidade >= 0 AND "
+            "desconto_pontualidade = ROUND(desconto_pontualidade, 2))"
+        )
+    db.execute(
+        "UPDATE contratos SET desconto_pontualidade = 0 "
+        "WHERE desconto_pontualidade IS NULL"
+    )
 
     db.execute(
         """
@@ -1152,6 +1169,12 @@ def contract_values(
         end_date.isoformat(),
         parse_decimal(data.get("valor_aluguel"), "Valor do aluguel", required=True),
         parse_decimal(data.get("valor_caucao"), "Valor da caução"),
+        parse_decimal(
+            data.get("desconto_pontualidade"),
+            "Desconto pontualidade",
+            max_decimal_places=2,
+        )
+        or 0.0,
         parse_contract_status(data.get("status"), status_default),
     )
 
@@ -2262,11 +2285,18 @@ def get_contract(db: sqlite3.Connection, record_id: int) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def contract_row_response(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    response = row_dict(row)
+    if response is not None:
+        response["desconto_pontualidade"] = response.get("desconto_pontualidade") or 0.0
+    return response
+
+
 def contract_response(db: sqlite3.Connection, record_id: int) -> dict[str, Any] | None:
     row = get_contract(db, record_id)
     if row is None:
         return None
-    response = row_dict(row)
+    response = contract_row_response(row)
     periods = get_contract_periods(db, record_id)
     response["periodos"] = periods
     response["periodo_atual_id"] = periods[-1]["id"] if periods else None
@@ -2329,11 +2359,13 @@ def property_financials(
     gross_rent: Any,
     row: sqlite3.Row,
     *,
+    punctuality_discount: Any = 0,
     include_administration_fee: bool = True,
 ) -> dict[str, Decimal]:
     """Share the report's net-rent calculation with consolidated views."""
 
     gross = report_money(gross_rent)
+    discount = report_money(punctuality_discount)
     iptu, condominium = report_property_expenses(row)
     administration_fee = (
         report_money(row["taxa_adm_imovel"])
@@ -2342,11 +2374,12 @@ def property_financials(
     )
     return {
         "aluguel_bruto": gross,
+        "desconto_pontualidade": discount,
         "iptu_descontado": iptu,
         "condominio_descontado": condominium,
         "taxa_administracao": administration_fee,
         "aluguel_liquido": report_money(
-            gross - iptu - condominium - administration_fee
+            gross - discount - iptu - condominium - administration_fee
         ),
     }
 
@@ -2604,7 +2637,8 @@ def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
                    cp.id AS periodo_id,
                    cp.data_inicio AS periodo_data_inicio,
                    cp.valor_aluguel,
-                   cp.dia_pagamento
+                   cp.dia_pagamento,
+                   c.desconto_pontualidade
             FROM contratos AS c
             JOIN contrato_periodos AS cp ON cp.contrato_id = c.id
             WHERE c.status = 'ATIVO'
@@ -2614,6 +2648,7 @@ def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
                selected.imovel_id,
                selected.valor_aluguel,
                selected.dia_pagamento,
+               selected.desconto_pontualidade,
                i.apelido AS imovel_nome,
                i.imobiliaria,
                i.taxa_adm_imovel,
@@ -2690,7 +2725,11 @@ def financial_report_response(db: sqlite3.Connection) -> dict[str, Any]:
     total_net = Decimal("0.00")
 
     for row in rows:
-        financials = property_financials(row["valor_aluguel"], row)
+        financials = property_financials(
+            row["valor_aluguel"],
+            row,
+            punctuality_discount=row["desconto_pontualidade"],
+        )
         gross = financials["aluguel_bruto"]
         iptu = financials["iptu_descontado"]
         condominium = financials["condominio_descontado"]
@@ -3328,7 +3367,7 @@ def register_routes(app: Flask) -> None:
                 """,
                 query_params,
             ).fetchall()
-            return jsonify([row_dict(row) for row in rows])
+            return jsonify([contract_row_response(row) for row in rows])
 
         data = payload()
         if data is None:
@@ -3344,8 +3383,8 @@ def register_routes(app: Flask) -> None:
                 """
                 INSERT INTO contratos
                     (imovel_id, inquilino_id, data_inicio, data_fim,
-                     valor_aluguel, valor_caucao, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     valor_aluguel, valor_caucao, desconto_pontualidade, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -3597,7 +3636,8 @@ def register_routes(app: Flask) -> None:
                     """
                     UPDATE contratos
                     SET imovel_id = ?, inquilino_id = ?, data_inicio = ?, data_fim = ?,
-                        valor_aluguel = ?, valor_caucao = ?, status = ?
+                        valor_aluguel = ?, valor_caucao = ?, desconto_pontualidade = ?,
+                        status = ?
                     WHERE id = ?
                     """,
                     (*values, record_id),
