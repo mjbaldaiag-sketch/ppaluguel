@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 import sqlite3
+import unicodedata
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import BytesIO
@@ -167,6 +168,7 @@ def get_db() -> sqlite3.Connection:
         g.db = sqlite3.connect(str(current_app.config["DATABASE"]))
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys = ON")
+        g.db.create_function("normalize_search_text", 1, normalize_search_text)
     return g.db
 
 
@@ -647,6 +649,19 @@ def repair_text_encoding(value: str) -> str:
     for corrupted, correct in KNOWN_REPLACEMENT_REPAIRS.items():
         repaired = repaired.replace(corrupted, correct)
     return repaired
+
+
+def normalize_search_text(value: Any) -> str:
+    """Normalize searchable text without considering accents or letter case."""
+
+    text = repair_text_encoding(str(value or "")).strip()
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_diacritics = "".join(
+        character
+        for character in decomposed
+        if not unicodedata.combining(character)
+    )
+    return without_diacritics.upper()
 
 
 def normalize_persisted_text(field: str, value: Any) -> str | None:
@@ -2395,12 +2410,12 @@ def quick_search_response(
 ) -> list[dict[str, Any]]:
     """Return one searchable financial row for each property."""
 
-    term = str(search_term or "").strip().upper()
+    term = normalize_search_text(search_term)
     digits = re.sub(r"\D", "", term)
     conditions: list[str] = []
     params: list[str] = []
     if term:
-        conditions.append("search_text LIKE ? ESCAPE '\\'")
+        conditions.append("normalize_search_text(search_text) LIKE ? ESCAPE '\\'")
         params.append(f"%{escape_like_term(term)}%")
     if digits:
         conditions.append("search_digits LIKE ? ESCAPE '\\'")

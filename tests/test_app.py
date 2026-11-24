@@ -1632,6 +1632,52 @@ class AppCrudTestCase(unittest.TestCase):
             [],
         )
 
+    def test_quick_search_ignores_accents_in_query_and_records(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Ant\u00f4nio da Silva")
+        ).get_json()
+
+        accented_property = self.property_payload(owner["id"])
+        accented_property.update(
+            {"apelido": "Casa Ant\u00f4nio", "cidade": "S\u00e3o Paulo"}
+        )
+        accented = self.post_json("/api/imoveis", accented_property).get_json()
+
+        unaccented_property = self.property_payload(owner["id"])
+        unaccented_property.update(
+            {"apelido": "Casa Antonio", "cidade": "Sao Paulo"}
+        )
+        unaccented = self.post_json("/api/imoveis", unaccented_property).get_json()
+        expected_ids = {accented["id"], unaccented["id"]}
+
+        for term in ("antonio", "ant\u00f4nio", "ant\u00f3nio"):
+            response = self.client.get("/api/busca-rapida", query_string={"q": term})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                {row["imovel_id"] for row in response.get_json()}, expected_ids
+            )
+
+        for term in ("sao paulo", "s\u00e3o paulo"):
+            response = self.client.get("/api/busca-rapida", query_string={"q": term})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                {row["imovel_id"] for row in response.get_json()}, expected_ids
+            )
+
+        numeric_response = self.client.get(
+            "/api/busca-rapida", query_string={"q": accented["cep"]}
+        )
+        self.assertEqual(
+            {row["imovel_id"] for row in numeric_response.get_json()},
+            {accented["id"], unaccented["id"]},
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/busca-rapida", query_string={"q": "Casa%"}
+            ).get_json(),
+            [],
+        )
+
     def test_quick_search_markup_and_frontend_hooks(self):
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn('data-module="busca_rapida"', page)
