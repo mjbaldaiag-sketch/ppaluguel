@@ -142,6 +142,7 @@ class AppCrudTestCase(unittest.TestCase):
             ("INTEGER", "0"),
         )
         self.assertEqual(property_schema["valor_condominio"], ("REAL", None))
+        self.assertEqual(property_schema["taxa_adm_imovel"], ("REAL", None))
         self.assertEqual(generation_schema["preco_venda_kwh"], "INTEGER")
 
     def test_proprietario_crud_and_normalization(self):
@@ -273,6 +274,7 @@ class AppCrudTestCase(unittest.TestCase):
                 "valor_iptu": "R$ 123,45",
                 "repasse_taxa_condominio": "1",
                 "valor_condominio": "R$ 456,78",
+                "taxa_adm_imovel": "R$ 321,45",
             }
         )
 
@@ -283,10 +285,12 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertEqual(property_data["valor_iptu"], 123.45)
         self.assertEqual(property_data["repasse_taxa_condominio"], 1)
         self.assertEqual(property_data["valor_condominio"], 456.78)
+        self.assertEqual(property_data["taxa_adm_imovel"], 321.45)
 
         fetched = self.client.get(f"/api/imoveis/{property_data['id']}").get_json()
         self.assertEqual(fetched["valor_iptu"], 123.45)
         self.assertEqual(fetched["valor_condominio"], 456.78)
+        self.assertEqual(fetched["taxa_adm_imovel"], 321.45)
         listed = self.client.get("/api/imoveis").get_json()
         self.assertEqual(listed[0]["repasse_iptu"], 1)
         self.assertEqual(listed[0]["repasse_taxa_condominio"], 1)
@@ -298,6 +302,7 @@ class AppCrudTestCase(unittest.TestCase):
                 "valor_iptu": "",
                 "repasse_taxa_condominio": "0",
                 "valor_condominio": "0,00",
+                "taxa_adm_imovel": "0,00",
             }
         )
         updated = self.put_json(f"/api/imoveis/{property_data['id']}", changed)
@@ -307,8 +312,14 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIsNone(updated_data["valor_iptu"])
         self.assertEqual(updated_data["repasse_taxa_condominio"], 0)
         self.assertEqual(updated_data["valor_condominio"], 0.0)
+        self.assertEqual(updated_data["taxa_adm_imovel"], 0.0)
 
-        for field in ("valor_iptu", "valor_condominio"):
+        blank_taxa = dict(changed, taxa_adm_imovel="")
+        blank_updated = self.put_json(f"/api/imoveis/{property_data['id']}", blank_taxa)
+        self.assertEqual(blank_updated.status_code, 200)
+        self.assertIsNone(blank_updated.get_json()["taxa_adm_imovel"])
+
+        for field in ("valor_iptu", "valor_condominio", "taxa_adm_imovel"):
             invalid_precision = self.property_payload(owner["id"])
             invalid_precision[field] = "1,001"
             self.assertEqual(
@@ -1118,6 +1129,280 @@ class AppCrudTestCase(unittest.TestCase):
         )
         self.assertEqual(invalid_update.status_code, 400)
 
+    def test_financial_report_calculates_rows_summary_and_owner_filter(self):
+        owner_one = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Relatorio Um")
+        ).get_json()
+        owner_two = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Relatorio Dois")
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Relatorio")
+        ).get_json()
+
+        def create_property(
+            owner_id,
+            name,
+            iptu_repass,
+            condominium_repass,
+            rent="1000",
+            administration_fee="R$ 100,00",
+            administration_flag="1",
+        ):
+            payload = self.property_payload(owner_id)
+            payload.update(
+                {
+                    "apelido": name,
+                    "repasse_iptu": str(iptu_repass),
+                    "valor_iptu": "R$ 559,97",
+                    "repasse_taxa_condominio": str(condominium_repass),
+                    "valor_condominio": "R$ 393,59",
+                    "imobiliaria": administration_flag,
+                    "taxa_adm_imovel": administration_fee,
+                }
+            )
+            property_data = self.post_json("/api/imoveis", payload).get_json()
+            contract_payload = self.contract_payload(property_data["id"], tenant["id"])
+            contract_payload.update({"valor_aluguel": f"R$ {rent},00"})
+            contract = self.post_json("/api/contratos", contract_payload).get_json()
+            return property_data, contract
+
+        both_discounted, _ = create_property(owner_one["id"], "Relatorio Ambos", 0, 0)
+        both_repassed, _ = create_property(owner_one["id"], "Relatorio Nenhum", 1, 1)
+        iptu_repassed, _ = create_property(
+            owner_one["id"], "Relatorio IPTU", 1, 0, administration_fee="R$ 50,00"
+        )
+        condominium_repassed, _ = create_property(
+            owner_two["id"],
+            "Relatorio Condominio",
+            0,
+            1,
+            administration_fee="R$ 100,00",
+            administration_flag="0",
+        )
+        no_contract = self.property_payload(owner_two["id"])
+        no_contract["apelido"] = "Relatorio Sem Contrato"
+        self.post_json("/api/imoveis", no_contract)
+
+        closed_property = self.property_payload(owner_two["id"])
+        closed_property["apelido"] = "Relatorio Encerrado"
+        closed_property = self.post_json("/api/imoveis", closed_property).get_json()
+        closed_payload = self.contract_payload(closed_property["id"], tenant["id"])
+        closed_payload["status"] = "ENCERRADO"
+        self.assertEqual(self.post_json("/api/contratos", closed_payload).status_code, 201)
+
+        report = self.client.get("/api/relatorios")
+        self.assertEqual(report.status_code, 200)
+        data = report.get_json()
+        self.assertEqual(len(data["linhas"]), 4)
+        rows = {row["imovel_id"]: row for row in data["linhas"]}
+
+        first = rows[both_discounted["id"]]
+        self.assertEqual(first["tipo_linha"], "CONTRATO_ATIVO")
+        self.assertNotIn("taxa_adm_imovel", first)
+        self.assertEqual(
+            {
+                first["aluguel_bruto"],
+                first["iptu_mensal"],
+                first["condominio_descontado"],
+                first["aluguel_liquido"],
+                first["margem_liquida_percentual"],
+            },
+            {1000.0, 46.66, 393.59, 459.75, 45.98},
+        )
+        self.assertEqual(first["dia_pagamento"], 5)
+
+        self.assertEqual(rows[both_repassed["id"]]["iptu_mensal"], 0.0)
+        self.assertEqual(rows[both_repassed["id"]]["condominio_descontado"], 0.0)
+        self.assertEqual(rows[both_repassed["id"]]["aluguel_liquido"], 900.0)
+        self.assertEqual(rows[iptu_repassed["id"]]["iptu_mensal"], 0.0)
+        self.assertEqual(rows[iptu_repassed["id"]]["condominio_descontado"], 393.59)
+        self.assertEqual(rows[iptu_repassed["id"]]["aluguel_liquido"], 556.41)
+        self.assertEqual(rows[condominium_repassed["id"]]["iptu_mensal"], 46.66)
+        self.assertEqual(rows[condominium_repassed["id"]]["condominio_descontado"], 0.0)
+        self.assertEqual(rows[condominium_repassed["id"]]["aluguel_liquido"], 953.34)
+
+        self.assertEqual(data["resumo"]["total_aluguel_bruto"], 4000.0)
+        self.assertEqual(data["resumo"]["total_iptu_descontado"], 93.32)
+        self.assertEqual(data["resumo"]["total_condominio_descontado"], 787.18)
+        self.assertEqual(data["resumo"]["total_aluguel_liquido"], 2869.5)
+        self.assertEqual(data["resumo"]["margem_liquida_percentual"], 71.74)
+
+        filtered = self.client.get(
+            "/api/relatorios", query_string={"proprietario_id": owner_two["id"]}
+        ).get_json()
+        self.assertEqual(
+            {row["imovel_id"] for row in filtered["linhas"]},
+            {condominium_repassed["id"]},
+        )
+        self.assertEqual(filtered["resumo"]["total_aluguel_bruto"], 1000.0)
+
+    def test_financial_report_includes_vacant_expenses_without_duplicates(self):
+        owner_one = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Desocupado Um")
+        ).get_json()
+        owner_two = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Desocupado Dois")
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Desocupado")
+        ).get_json()
+
+        def create_property(
+            owner_id,
+            name,
+            iptu,
+            iptu_repass,
+            condominium,
+            condominium_repass,
+        ):
+            payload = self.property_payload(owner_id)
+            payload.update(
+                {
+                    "apelido": name,
+                    "repasse_iptu": str(iptu_repass),
+                    "valor_iptu": f"R$ {iptu},00",
+                    "repasse_taxa_condominio": str(condominium_repass),
+                    "valor_condominio": f"R$ {condominium},00",
+                }
+            )
+            return self.post_json("/api/imoveis", payload).get_json()
+
+        active = create_property(owner_one["id"], "Despesas Ativo", "1200", 0, "300", 0)
+        active_contract = self.contract_payload(active["id"], tenant["id"])
+        active_contract["valor_aluguel"] = "R$ 2000,00"
+        self.assertEqual(self.post_json("/api/contratos", active_contract).status_code, 201)
+
+        vacant_iptu = create_property(owner_one["id"], "Vaga IPTU", "600", 0, "0", 0)
+        vacant_condominium = create_property(
+            owner_one["id"], "Vaga Condominio", "0", 0, "250", 0
+        )
+        vacant_both = create_property(
+            owner_one["id"], "Vaga Ambos", "1200", 0, "400", 0
+        )
+        repassed = create_property(
+            owner_one["id"], "Vaga Repassada", "600", 1, "250", 1
+        )
+        zero_values = create_property(
+            owner_one["id"], "Vaga Zerada", "0", 0, "0", 0
+        )
+        closed = create_property(
+            owner_one["id"], "Vaga Encerrada", "300", 0, "180", 0
+        )
+        closed_contract = self.contract_payload(closed["id"], tenant["id"])
+        closed_contract["status"] = "ENCERRADO"
+        self.assertEqual(self.post_json("/api/contratos", closed_contract).status_code, 201)
+
+        owner_two_vacant = create_property(
+            owner_two["id"], "Vaga Outro Proprietario", "0", 0, "300", 0
+        )
+
+        report = self.client.get("/api/relatorios")
+        self.assertEqual(report.status_code, 200)
+        data = report.get_json()
+        self.assertEqual(len(data["linhas"]), 6)
+        rows = {row["imovel_id"]: row for row in data["linhas"]}
+
+        self.assertEqual(
+            {row["imovel_id"] for row in data["linhas"]},
+            {
+                active["id"],
+                vacant_iptu["id"],
+                vacant_condominium["id"],
+                vacant_both["id"],
+                closed["id"],
+                owner_two_vacant["id"],
+            },
+        )
+        self.assertNotIn(repassed["id"], rows)
+        self.assertNotIn(zero_values["id"], rows)
+
+        self.assertEqual(rows[active["id"]]["tipo_linha"], "CONTRATO_ATIVO")
+        self.assertEqual(rows[active["id"]]["aluguel_bruto"], 2000.0)
+        self.assertEqual(rows[active["id"]]["aluguel_liquido"], 1600.0)
+
+        self.assertEqual(rows[vacant_iptu["id"]]["tipo_linha"], "DESOCUPADO_DESPESA")
+        self.assertEqual(rows[vacant_iptu["id"]]["iptu_mensal"], 50.0)
+        self.assertEqual(rows[vacant_iptu["id"]]["condominio_descontado"], 0.0)
+        self.assertEqual(rows[vacant_iptu["id"]]["aluguel_bruto"], 0.0)
+        self.assertEqual(rows[vacant_iptu["id"]]["aluguel_liquido"], -50.0)
+        self.assertIsNone(rows[vacant_iptu["id"]]["contrato_id"])
+        self.assertIsNone(rows[vacant_iptu["id"]]["dia_pagamento"])
+
+        self.assertEqual(rows[vacant_condominium["id"]]["iptu_mensal"], 0.0)
+        self.assertEqual(
+            rows[vacant_condominium["id"]]["condominio_descontado"], 250.0
+        )
+        self.assertEqual(rows[vacant_condominium["id"]]["aluguel_liquido"], -250.0)
+        self.assertEqual(rows[vacant_both["id"]]["iptu_mensal"], 100.0)
+        self.assertEqual(rows[vacant_both["id"]]["condominio_descontado"], 400.0)
+        self.assertEqual(rows[closed["id"]]["aluguel_liquido"], -205.0)
+
+        self.assertEqual(data["resumo"]["total_aluguel_bruto"], 2000.0)
+        self.assertEqual(data["resumo"]["total_iptu_descontado"], 275.0)
+        self.assertEqual(data["resumo"]["total_condominio_descontado"], 1430.0)
+        self.assertEqual(data["resumo"]["total_aluguel_liquido"], 295.0)
+        self.assertEqual(data["resumo"]["margem_liquida_percentual"], 14.75)
+
+        filtered = self.client.get(
+            "/api/relatorios", query_string={"proprietario_id": owner_two["id"]}
+        ).get_json()
+        self.assertEqual(
+            [row["imovel_id"] for row in filtered["linhas"]],
+            [owner_two_vacant["id"]],
+        )
+        self.assertEqual(filtered["resumo"]["total_aluguel_bruto"], 0.0)
+        self.assertEqual(filtered["resumo"]["total_condominio_descontado"], 300.0)
+        self.assertEqual(filtered["resumo"]["total_aluguel_liquido"], -300.0)
+        self.assertEqual(filtered["resumo"]["margem_liquida_percentual"], 0.0)
+
+    def test_financial_report_uses_latest_active_period_once_per_property(self):
+        owner = self.post_json(
+            "/api/proprietarios", self.person_payload("Proprietario Periodo Relatorio")
+        ).get_json()
+        property_data = self.post_json(
+            "/api/imoveis", self.property_payload(owner["id"])
+        ).get_json()
+        tenant = self.post_json(
+            "/api/inquilinos-clientes", self.person_payload("Cliente Periodo Relatorio")
+        ).get_json()
+
+        first_payload = self.contract_payload(property_data["id"], tenant["id"])
+        first_payload.update({"data_inicio": "2026-01-01", "valor_aluguel": "R$ 1000,00"})
+        self.assertEqual(self.post_json("/api/contratos", first_payload).status_code, 201)
+
+        second_payload = self.contract_payload(property_data["id"], tenant["id"])
+        second_payload.update(
+            {
+                "data_inicio": "2026-03-01",
+                "valor_aluguel": "R$ 1200,00",
+                "dia_pagamento": "15",
+            }
+        )
+        second = self.post_json("/api/contratos", second_payload).get_json()
+
+        report = self.client.get("/api/relatorios").get_json()
+        self.assertEqual(len(report["linhas"]), 1)
+        row = report["linhas"][0]
+        self.assertEqual(row["contrato_id"], second["id"])
+        self.assertEqual(row["aluguel_bruto"], 1200.0)
+        self.assertEqual(row["dia_pagamento"], 15)
+
+        zero_rent = self.property_payload(owner["id"])
+        zero_rent.update({"apelido": "Relatorio Zero", "aluguel": "R$ 0,00"})
+        zero_property = self.post_json("/api/imoveis", zero_rent).get_json()
+        zero_contract = self.contract_payload(zero_property["id"], tenant["id"])
+        zero_contract["valor_aluguel"] = "R$ 0,00"
+        self.assertEqual(self.post_json("/api/contratos", zero_contract).status_code, 201)
+
+        zero_row = next(
+            item
+            for item in self.client.get("/api/relatorios").get_json()["linhas"]
+            if item["imovel_id"] == zero_property["id"]
+        )
+        self.assertEqual(zero_row["aluguel_liquido"], 0.0)
+        self.assertEqual(zero_row["margem_liquida_percentual"], 0.0)
+
     def test_contract_period_history_renewal_edit_and_revert(self):
         owner = self.post_json(
             "/api/proprietarios", self.person_payload("Proprietário dos Períodos")
@@ -1288,6 +1573,7 @@ class AppCrudTestCase(unittest.TestCase):
     def test_dashboard_contract_count_and_page_markup(self):
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn('data-module="contratos"', page)
+        self.assertIn('data-module="relatorios"', page)
         self.assertIn('data-module="energia_solar"', page)
         self.assertIn('data-form-section="energia_solar"', page)
         self.assertIn('data-field="geracao_mensal_kwh"', page)
@@ -1309,6 +1595,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('data-field="valor_iptu" data-mask="currency"', page)
         self.assertIn('data-field="repasse_taxa_condominio"', page)
         self.assertIn('data-field="valor_condominio" data-mask="currency"', page)
+        self.assertIn('data-field="taxa_adm_imovel" data-mask="currency"', page)
         self.assertIn("Repasse tx. condomínio", page)
         self.assertLess(
             page.index('data-field="percentual_energia"'),
@@ -1322,6 +1609,18 @@ class AppCrudTestCase(unittest.TestCase):
             page.index('data-field="valor_iptu"'),
             page.index('data-field="repasse_taxa_condominio"'),
         )
+        self.assertLess(
+            page.index('data-field="imobiliaria"'),
+            page.index('data-field="taxa_adm_imovel"'),
+        )
+        self.assertLess(
+            page.index('data-field="taxa_adm_imovel"'),
+            page.index('data-field="tipo_operacao"'),
+        )
+        report_markup = page.split('id="reports-panel"', 1)[1].split(
+            'id="record-modal"', 1
+        )[0]
+        self.assertNotIn("Taxa adm. imóvel", report_markup)
         self.assertLess(
             page.index('data-field="unidade_geradora_id"'),
             page.index('data-field="cliente_energia_solar_id"'),
@@ -1367,6 +1666,14 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn('value="ENCERRADO">Encerrado</option>', page)
         self.assertIn('id="active-contracts-head"', page)
         self.assertIn('id="closed-contracts-head"', page)
+        self.assertIn('id="reports-panel"', page)
+        self.assertIn('id="report-total-gross"', page)
+        self.assertIn('id="report-total-iptu"', page)
+        self.assertIn('id="report-total-condominium"', page)
+        self.assertIn('id="report-total-net"', page)
+        self.assertIn('id="report-total-margin"', page)
+        self.assertIn('id="reports-head"', page)
+        self.assertIn('id="reports-body"', page)
         self.assertIn("Contratos Ativos", page)
         self.assertIn("Contratos Encerrados", page)
         self.assertIn('id="clear-cep-button"', page)
@@ -1401,6 +1708,14 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn("updateModuleTitle(config.title, state.records.length)", source)
         self.assertIn("adm_propriedade=${encodeURIComponent(state.solarFilterValue)}", source)
         self.assertIn("withPropertyFilters", source)
+        self.assertIn('endpoint: "/api/relatorios"', source)
+        self.assertIn("function renderReportsTable(config, sort)", source)
+        self.assertIn('"DESOCUPADO_DESPESA"', source)
+        self.assertIn('record.tipo_linha === "DESOCUPADO_DESPESA"', source)
+        self.assertIn("IMÓVEIS DESOCUPADOS / DESPESAS", source)
+        self.assertIn("report-vacant-section", source)
+        self.assertIn("report-expense-cell", source)
+        self.assertIn("function formatPercentage(value)", source)
         self.assertIn("/api/unidades-geracao", source)
         self.assertIn("syncEnergyPercentageRequirement", source)
         self.assertIn("unidade_geradora_id", source)
@@ -1647,6 +1962,14 @@ class AppCrudTestCase(unittest.TestCase):
             self.assertEqual(self.client.get(f"{endpoint}?proprietario_id=abc").status_code, 400)
             self.assertEqual(self.client.get(f"{endpoint}?proprietario_id=999").status_code, 400)
             self.assertEqual(self.client.get(f"{endpoint}?adm_propriedade=maybe").status_code, 400)
+        self.assertEqual(
+            self.client.get("/api/relatorios?proprietario_id=abc").status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.get("/api/relatorios?proprietario_id=999").status_code,
+            400,
+        )
         self.assertEqual(
             self.client.get("/api/unidades-geracao?proprietario_id=abc").status_code,
             400,
@@ -2122,7 +2445,7 @@ class AppCrudTestCase(unittest.TestCase):
             "FROM imoveis WHERE id = 1"
         ).fetchone()
         financial_defaults = connection.execute(
-            "SELECT repasse_iptu, valor_iptu, repasse_taxa_condominio, valor_condominio "
+            "SELECT repasse_iptu, valor_iptu, repasse_taxa_condominio, valor_condominio, taxa_adm_imovel "
             "FROM imoveis WHERE id = 1"
         ).fetchone()
         solar_preserved = connection.execute(
@@ -2147,6 +2470,7 @@ class AppCrudTestCase(unittest.TestCase):
         self.assertIn("valor_iptu", column_names)
         self.assertIn("repasse_taxa_condominio", column_names)
         self.assertIn("valor_condominio", column_names)
+        self.assertIn("taxa_adm_imovel", column_names)
         self.assertIn("nome_contato", client_column_names)
         self.assertIn("contratos", table_names)
         self.assertEqual(
@@ -2154,7 +2478,7 @@ class AppCrudTestCase(unittest.TestCase):
             ("IMÓVEL LEGADO", "CIDADE LEGADA", 1200.0, None, "ALUGUEL", 0),
         )
         self.assertEqual(solar_preserved, ("ENERGIA SOLAR",))
-        self.assertEqual(financial_defaults, (0, None, 0, None))
+        self.assertEqual(financial_defaults, (0, None, 0, None, None))
 
         records = legacy_client.get("/api/imoveis").get_json()
         self.assertEqual(
@@ -2176,7 +2500,7 @@ class AppCrudTestCase(unittest.TestCase):
             for row in migrated_again.execute("PRAGMA table_info(imoveis)").fetchall()
         ]
         migrated_financial_values = migrated_again.execute(
-            "SELECT repasse_iptu, valor_iptu, repasse_taxa_condominio, valor_condominio "
+            "SELECT repasse_iptu, valor_iptu, repasse_taxa_condominio, valor_condominio, taxa_adm_imovel "
             "FROM imoveis WHERE id = 1"
         ).fetchone()
         migrated_again.close()
@@ -2190,9 +2514,10 @@ class AppCrudTestCase(unittest.TestCase):
             "valor_iptu",
             "repasse_taxa_condominio",
             "valor_condominio",
+            "taxa_adm_imovel",
         ):
             self.assertEqual(migrated_financial_columns.count(field), 1)
-        self.assertEqual(migrated_financial_values, (0, None, 0, None))
+        self.assertEqual(migrated_financial_values, (0, None, 0, None, None))
         self.assertEqual(client_preserved, ("CLIENTE LEGADO", None))
 
     def test_existing_database_migrates_generation_units_without_data_loss(self):

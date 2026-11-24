@@ -96,6 +96,25 @@
                 { key: "valor_caucao", label: "Caução", type: "number", value: (record) => record.valor_caucao },
             ],
         },
+        relatorios: {
+            endpoint: "/api/relatorios",
+            title: "Relatórios",
+            singular: "relatório",
+            description: "Acompanhe o resumo financeiro mensal dos imóveis ocupados e desocupados.",
+            empty: "Nenhum contrato ativo ou despesa de imóvel desocupado.",
+            emptyDescription: "Contratos ativos e despesas aplicáveis de imóveis desocupados aparecerão neste relatório.",
+            readOnly: true,
+            report: true,
+            columns: [
+                { key: "imovel_nome", label: "Imóvel", type: "text", value: (record) => record.imovel_nome },
+                { key: "aluguel_bruto", label: "Aluguel bruto", type: "number", value: (record) => record.aluguel_bruto },
+                { key: "iptu_mensal", label: "IPTU mensal", type: "number", value: (record) => record.iptu_mensal },
+                { key: "condominio_descontado", label: "Condomínio", type: "number", value: (record) => record.condominio_descontado },
+                { key: "aluguel_liquido", label: "Aluguel líquido", type: "number", value: (record) => record.aluguel_liquido },
+                { key: "dia_pagamento", label: "Dia", type: "number", value: (record) => record.dia_pagamento },
+                { key: "margem_liquida_percentual", label: "Margem líquida %", type: "number", value: (record) => record.margem_liquida_percentual },
+            ],
+        },
     };
 
     const states = [
@@ -171,6 +190,7 @@
         properties: [],
         clients: [],
         contractPeriods: [],
+        reportSummary: {},
         periodMode: null,
         editingPeriodId: null,
         distributionRequestId: 0,
@@ -222,6 +242,17 @@
         elements.recordsHead = document.getElementById("records-head");
         elements.recordsBody = document.getElementById("records-body");
         elements.recordCount = document.getElementById("record-count");
+        elements.globalSummary = document.getElementById("global-summary");
+        elements.reportsPanel = document.getElementById("reports-panel");
+        elements.reportsHead = document.getElementById("reports-head");
+        elements.reportsBody = document.getElementById("reports-body");
+        elements.reportsEmpty = document.getElementById("reports-empty");
+        elements.reportsLoadingState = document.getElementById("reports-loading-state");
+        elements.reportTotalGross = document.getElementById("report-total-gross");
+        elements.reportTotalIptu = document.getElementById("report-total-iptu");
+        elements.reportTotalCondominium = document.getElementById("report-total-condominium");
+        elements.reportTotalNet = document.getElementById("report-total-net");
+        elements.reportTotalMargin = document.getElementById("report-total-margin");
         elements.contractsTables = document.getElementById("contracts-tables");
         elements.contractsLoadingState = document.getElementById("contracts-loading-state");
         elements.activeContractsHead = document.getElementById("active-contracts-head");
@@ -328,6 +359,7 @@
         elements.activeContractsBody.addEventListener("click", handleTableAction);
         elements.closedContractsHead.addEventListener("click", handleSortHeaderClick);
         elements.closedContractsBody.addEventListener("click", handleTableAction);
+        elements.reportsHead.addEventListener("click", handleSortHeaderClick);
         document.querySelectorAll(".contract-empty-action").forEach((button) => {
             button.addEventListener("click", () => openModal("create", null, "contratos"));
         });
@@ -460,17 +492,25 @@
         const requestId = ++state.moduleRequestId;
         setLoading(true);
         try {
-            const records = await apiFetch(withPropertyFilters(config.endpoint, moduleName));
+            const response = await apiFetch(withPropertyFilters(config.endpoint, moduleName));
             if (requestId !== state.moduleRequestId || state.module !== moduleName) {
                 return;
             }
-            state.records = uniqueRecordsById(Array.isArray(records) ? records : []);
+            if (config.report) {
+                state.records = uniqueRecordsById(Array.isArray(response?.linhas) ? response.linhas : []);
+                state.reportSummary = response?.resumo || emptyReportSummary();
+            } else {
+                state.records = uniqueRecordsById(Array.isArray(response) ? response : []);
+            }
             renderTable();
         } catch (error) {
             if (requestId !== state.moduleRequestId || state.module !== moduleName) {
                 return;
             }
             state.records = [];
+            if (config.report) {
+                state.reportSummary = emptyReportSummary();
+            }
             renderTable();
             showToast(error.message, "error");
         } finally {
@@ -482,7 +522,7 @@
 
     async function refreshCurrentModule() {
         await Promise.all([loadDashboard(), loadModule(state.module)]);
-        if (state.module === "imoveis" || state.module === "energia_solar") {
+        if (state.module === "imoveis" || state.module === "energia_solar" || state.module === "relatorios") {
             await loadOwners();
         }
         if (state.module === "contratos") {
@@ -513,8 +553,16 @@
 
     function setTableMode() {
         const isContracts = state.module === "contratos";
-        elements.recordsTableCard.hidden = isContracts;
+        const isReports = state.module === "relatorios";
+        elements.recordsTableCard.hidden = isContracts || isReports;
         elements.contractsTables.hidden = !isContracts;
+        elements.reportsPanel.hidden = !isReports;
+        elements.globalSummary.hidden = isReports;
+        elements.newRecordButton.hidden = isReports;
+        const solarFilterContainer = elements.solarFilter.closest(".global-filter");
+        if (solarFilterContainer) {
+            solarFilterContainer.hidden = isReports;
+        }
     }
 
     function updateModuleTitle(title, count) {
@@ -538,7 +586,7 @@
     }
 
     function withPropertyFilters(endpoint, context) {
-        const filteredContexts = ["dashboard", "imoveis", "contratos", "energia_solar"];
+        const filteredContexts = ["dashboard", "imoveis", "contratos", "energia_solar", "relatorios"];
         if (!filteredContexts.includes(context)) {
             return endpoint;
         }
@@ -559,10 +607,12 @@
     function setLoading(isLoading) {
         elements.loadingState.hidden = !isLoading;
         elements.contractsLoadingState.hidden = !isLoading;
+        elements.reportsLoadingState.hidden = !isLoading;
         if (isLoading) {
             elements.emptyState.hidden = true;
             elements.activeContractsEmpty.hidden = true;
             elements.closedContractsEmpty.hidden = true;
+            elements.reportsEmpty.hidden = true;
         }
     }
 
@@ -570,6 +620,10 @@
         const config = moduleConfig[state.module];
         const sort = state.sortByModule[state.module] || null;
         updateModuleTitle(config.title, state.records.length);
+        if (config.report) {
+            renderReportsTable(config, sort);
+            return;
+        }
         if (state.module === "contratos") {
             renderContractsTables(config, sort);
             return;
@@ -582,6 +636,40 @@
         elements.emptyTitle.textContent = config.empty;
         elements.emptyDescription.textContent = config.emptyDescription;
         elements.emptyState.hidden = state.records.length !== 0;
+    }
+
+    function emptyReportSummary() {
+        return {
+            total_aluguel_bruto: 0,
+            total_iptu_descontado: 0,
+            total_condominio_descontado: 0,
+            total_aluguel_liquido: 0,
+            margem_liquida_percentual: 0,
+        };
+    }
+
+    function renderReportsTable(config, sort) {
+        const summary = state.reportSummary || emptyReportSummary();
+        elements.reportTotalGross.textContent = formatCurrency(summary.total_aluguel_bruto);
+        elements.reportTotalIptu.textContent = formatCurrency(summary.total_iptu_descontado);
+        elements.reportTotalCondominium.textContent = formatCurrency(summary.total_condominio_descontado);
+        elements.reportTotalNet.textContent = formatCurrency(summary.total_aluguel_liquido);
+        elements.reportTotalMargin.textContent = formatPercentage(summary.margem_liquida_percentual);
+        elements.reportsHead.innerHTML = `<tr>${config.columns.map((column) => renderSortHeader(column, sort)).join("")}</tr>`;
+        const activeRecords = state.records.filter((record) => record.tipo_linha !== "DESOCUPADO_DESPESA");
+        const vacantRecords = state.records.filter((record) => record.tipo_linha === "DESOCUPADO_DESPESA");
+        const activeRows = sortRecords(activeRecords, config.columns, sort)
+            .map((record) => renderReportRow(record, sort))
+            .join("");
+        const vacantRows = sortRecords(vacantRecords, config.columns, sort)
+            .map((record) => renderReportRow(record, sort))
+            .join("");
+        const vacantSection = vacantRecords.length
+            ? `<tr class="report-vacant-section"><th colspan="${config.columns.length}" scope="rowgroup">IMÓVEIS DESOCUPADOS / DESPESAS</th></tr>`
+            : "";
+        elements.reportsBody.innerHTML = `${activeRows}${vacantSection}${vacantRows}`;
+        elements.recordCount.textContent = `${state.records.length} ${state.records.length === 1 ? "registro" : "registros"}`;
+        elements.reportsEmpty.hidden = state.records.length !== 0;
     }
 
     function renderContractsTables(config, sort) {
@@ -732,6 +820,32 @@
 
     function sortCellClass(sort, key) {
         return sort && sort.key === key ? "is-sorted-column" : "";
+    }
+
+    function renderReportRow(record, sort) {
+        const isVacant = record.tipo_linha === "DESOCUPADO_DESPESA";
+        const rowClass = isVacant ? "report-vacant-row" : "";
+        const expenseClass = isVacant ? " report-expense-cell" : "";
+        const netClass = isVacant ? " report-vacant-net" : "";
+        const avatar = isVacant ? "D" : "R";
+        const gross = isVacant ? "—" : formatCurrency(record.aluguel_bruto);
+        const iptu = isVacant && Number(record.iptu_mensal) <= 0
+            ? "—"
+            : formatCurrency(record.iptu_mensal);
+        const condominium = isVacant && Number(record.condominio_descontado) <= 0
+            ? "—"
+            : formatCurrency(record.condominio_descontado);
+        const paymentDay = record.dia_pagamento == null ? "—" : escapeHtml(record.dia_pagamento);
+        const margin = isVacant ? "—" : formatPercentage(record.margem_liquida_percentual);
+        return `<tr class="${rowClass}">
+            <td class="${sortCellClass(sort, "imovel_nome")}"><div class="property-cell"><span class="row-avatar property">${avatar}</span><span>${escapeHtml(record.imovel_nome)}<small class="subtle-text">Código #${record.imovel_id}</small></span></div></td>
+            <td class="${sortCellClass(sort, "aluguel_bruto")} report-money-cell">${gross}</td>
+            <td class="${sortCellClass(sort, "iptu_mensal")} report-money-cell${expenseClass}">${iptu}</td>
+            <td class="${sortCellClass(sort, "condominio_descontado")} report-money-cell${expenseClass}">${condominium}</td>
+            <td class="${sortCellClass(sort, "aluguel_liquido")} report-money-cell${netClass}">${formatCurrency(record.aluguel_liquido)}</td>
+            <td class="${sortCellClass(sort, "dia_pagamento")} report-day-cell">${paymentDay}</td>
+            <td class="${sortCellClass(sort, "margem_liquida_percentual")} report-percentage-cell">${margin}</td>
+        </tr>`;
     }
 
     function renderRow(record, sort) {
@@ -2080,6 +2194,15 @@
     function formatCurrency(value) {
         if (value === null || value === undefined || value === "" || Number.isNaN(Number(value))) return "—";
         return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value));
+    }
+
+    function formatPercentage(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return "0,00%";
+        return `${new Intl.NumberFormat("pt-BR", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        }).format(number)}%`;
     }
 
     function formatSalePrice(value) {

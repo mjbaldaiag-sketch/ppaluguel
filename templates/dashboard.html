@@ -36,6 +36,10 @@
                 <span class="nav-icon" aria-hidden="true">☼</span>
                 <span>Energia solar</span>
             </button>
+            <button class="nav-item" type="button" data-module="relatorios">
+                <span class="nav-icon" aria-hidden="true">R</span>
+                <span>Relatórios</span>
+            </button>
         </nav>
 
         <div class="sidebar-footer">
@@ -78,7 +82,7 @@
                 </button>
             </section>
 
-            <section class="summary-grid" aria-label="Resumo dos cadastros">
+            <section class="summary-grid" id="global-summary" aria-label="Resumo dos cadastros">
                 <article class="summary-card summary-card-blue">
                     <div class="card-icon" aria-hidden="true">♙</div>
                     <div class="card-data">
@@ -227,6 +231,50 @@
                     <div class="loading-state" id="contracts-loading-state" hidden>
                         <div class="spinner" aria-hidden="true"></div>
                         <span>Carregando contratos...</span>
+                    </div>
+                </div>
+
+                <div class="reports-panel" id="reports-panel" hidden>
+                    <section class="report-summary-grid" aria-label="Resumo financeiro mensal">
+                        <article class="report-summary-card report-summary-card-blue">
+                            <span>Total aluguel bruto</span>
+                            <strong id="report-total-gross">R$ 0,00</strong>
+                        </article>
+                        <article class="report-summary-card report-summary-card-amber">
+                            <span>Total IPTU (proprietário)</span>
+                            <strong id="report-total-iptu">R$ 0,00</strong>
+                        </article>
+                        <article class="report-summary-card report-summary-card-purple">
+                            <span>Total condomínio (proprietário)</span>
+                            <strong id="report-total-condominium">R$ 0,00</strong>
+                        </article>
+                        <article class="report-summary-card report-summary-card-green">
+                            <span>Total aluguel líquido</span>
+                            <strong id="report-total-net">R$ 0,00</strong>
+                        </article>
+                        <article class="report-summary-card report-summary-card-teal">
+                            <span>Margem líquida ponderada</span>
+                            <strong id="report-total-margin">0,00%</strong>
+                        </article>
+                    </section>
+
+                    <div class="table-card report-table-card">
+                        <div class="table-scroll">
+                            <table class="records-table report-table">
+                                <thead id="reports-head"></thead>
+                                <tbody id="reports-body"></tbody>
+                            </table>
+                        </div>
+                        <div class="empty-state" id="reports-empty" hidden>
+                            <div class="empty-icon" aria-hidden="true">∅</div>
+                            <h3>Nenhum contrato ativo ou despesa de imóvel desocupado</h3>
+                            <p>Contratos ativos e despesas aplicáveis de imóveis desocupados aparecerão neste relatório.</p>
+                        </div>
+                    </div>
+
+                    <div class="loading-state reports-loading-state" id="reports-loading-state" hidden>
+                        <div class="spinner" aria-hidden="true"></div>
+                        <span>Carregando relatório...</span>
                     </div>
                 </div>
             </section>
@@ -424,6 +472,10 @@
                             <option value="0">Não</option>
                             <option value="1">Sim</option>
                         </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Taxa adm. imóvel</span>
+                        <input type="text" data-field="taxa_adm_imovel" data-mask="currency" inputmode="decimal" placeholder="R$ 0,00">
                     </label>
                     <label class="form-field">
                         <span>Tipo operação <b>*</b></span>
